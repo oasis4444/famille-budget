@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Chaque famille a un dossier secret : /families/{code-secret-de-la-famille}/rows/...
+    match /families/{fid}/rows/{rid} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasOnly(['t','id','ua','srv','data'])
+                    && request.resource.data.ua is number
+                    && request.resource.data.data is string
+                    && request.resource.data.data.size() < 20000;
+      // une ancienne version ne peut jamais ecraser une version plus recente
+      allow update: if request.resource.data.keys().hasOnly(['t','id','ua','srv','data'])
+                    && request.resource.data.ua is number
+                    && request.resource.data.ua >= resource.data.ua
+                    && request.resource.data.data is string
+                    && request.resource.data.data.size() < 20000;
+      allow delete: if false;
+    }
+  }
+}
