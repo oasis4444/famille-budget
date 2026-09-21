@@ -1,4 +1,4 @@
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart' show openFile;
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'store.dart';
@@ -6,8 +6,8 @@ import 'ui.dart';
 
 /// Import d'un fichier de données reçu (WhatsApp, etc.) : fusion sans doublon.
 Future<void> importFlow(BuildContext c) async {
-  final r = await FilePicker.platform.pickFiles();
-  final path = r?.files.single.path;
+  final f = await openFile();
+  final path = f?.path;
   if (path == null) return;
   try {
     final n = await store.importFile(path);
