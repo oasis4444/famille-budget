@@ -42,6 +42,7 @@ jobs:
           flutter create --platforms=android --org mg.raoliarison --project-name famille_budget .
           rm -rf test
           sed -i 's/android:label="[^"]*"/android:label="Famille Budget"/' android/app/src/main/AndroidManifest.xml
+          sed -i -E 's/minSdk(Version)? ?=? ?flutter\.minSdkVersion/minSdk = 26/' android/app/build.gradle*
 
       - run: flutter pub get
       - run: flutter build apk --release
