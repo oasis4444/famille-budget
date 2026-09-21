@@ -1,0 +1,57 @@
+name: Construire l'APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restaurer la clé de signature
+        id: cache-key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: famille-budget-keystore-v1
+
+      - name: Créer la clé (première fois seulement)
+        if: steps.cache-key.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.android
+          keytool -genkey -v -keystore ~/.android/debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Famille Budget,O=Famille Raoliarison,C=MG"
+
+      - name: Générer le projet Android
+        run: |
+          flutter create --platforms=android --org mg.raoliarison --project-name famille_budget .
+          rm -rf test
+          sed -i 's/android:label="[^"]*"/android:label="Famille Budget"/' android/app/src/main/AndroidManifest.xml
+
+      - run: flutter pub get
+      - run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FamilleBudget-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CLE-DE-SIGNATURE-A-CONSERVER
+          path: ~/.android/debug.keystore
