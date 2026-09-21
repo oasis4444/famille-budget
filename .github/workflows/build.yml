@@ -43,6 +43,7 @@ jobs:
           rm -rf test
           sed -i 's/android:label="[^"]*"/android:label="Famille Budget"/' android/app/src/main/AndroidManifest.xml
           sed -i -E 's/minSdk(Version)? ?=? ?flutter\.minSdkVersion/minSdk = 26/' android/app/build.gradle*
+          sed -i -E 's/compileSdk(Version)? ?=? ?flutter\.compileSdkVersion/compileSdk = 36/' android/app/build.gradle*
 
       - run: flutter pub get
       - run: flutter build apk --release
