@@ -223,7 +223,7 @@ const T=s=>PREFS.lang==='mg'?(MG[s]||s):s;
 const savePrefs=()=>{try{localStorage.setItem(PREF_KEY,JSON.stringify(PREFS))}catch(e){}};
 
 function seed(){
-  const now=Date.now(),db={meta:{family:'Famille Raoliarison'}};TABLES.forEach(t=>db[t]=[]);
+  const now=Date.now(),db={meta:{family:'Famille Raoliarison',ownerId:'m_papa'}};TABLES.forEach(t=>db[t]=[]);
   const ins=(t,r)=>db[t].push({...r,updated_at:0,deleted:0});
   ins('members',{id:'m_papa',name:'Papa',role:'parent',pin:'',color:0xFF14614A});
   ins('members',{id:'m_maman',name:'Maman',role:'parent',pin:'',color:0xFFB8623A});
@@ -282,6 +282,9 @@ let toastT;function toast(m,o){o=o||{};const e=$('#toast');e.className='';e._und
 /* ============ Acces metier ============ */
 const curMe=()=>{const m=byId('members',UI.me);return m&&!m.deleted?m:null};
 const isParent=()=>curMe()?.role==='parent';
+const isGuest=()=>curMe()?.role==='guest';
+const ownerId=()=>DB.meta.ownerId||(list('members').find(m=>m.role==='parent')||{}).id||null;
+const isOwner=()=>!!curMe()&&curMe().id===ownerId();
 const visible=()=>isParent()?txs():txs().filter(t=>t.member_id===UI.me||t.created_by===UI.me);
 const topCats=()=>list('categories').filter(c=>!c.parent_id);
 const subsOf=id=>list('categories').filter(c=>c.parent_id===id);
@@ -342,6 +345,7 @@ user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'
 };
 const svg=(n,s=20,cls='')=>`<svg class="ic ${cls}" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]||''}</svg>`;
 const NAV_ITEMS=[['home','Accueil','home'],['tx','Opérations','list'],['bil','Bilans','chart'],['set','Réglages','settings']];
+function navItems(){return isGuest()?NAV_ITEMS.filter(n=>n[0]!=='bil'):NAV_ITEMS}
 ICONS.camera='<path d="M4 8h3l2-3h6l2 3h3v12H4z"/><circle cx="12" cy="13" r="3.5"/>';
 ICONS.info='<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.5"/>';
 const PALS=[{k:'aurore',n:'Aurore',c1:'#4A2BD8',c2:'#E24FA8'},{k:'ocean',n:'Océan',c1:'#114FCC',c2:'#12C8E8'},{k:'sunset',n:'Coucher de soleil',c1:'#D63A1A',c2:'#FFB020'},{k:'emerald',n:'Émeraude',c1:'#064E3B',c2:'#12A383'}];
@@ -372,6 +376,150 @@ function applyCustomPalette(hex,isDark){const root=document.documentElement.styl
   root.setProperty('--sh',isDark?'none':`0 1px 2px rgba(20,16,40,.04),0 10px 28px rgba(${r},${g},${b},.10)`)}
 function clearCustomPalette(){const root=document.documentElement.style;['--pri','--pri2','--pri3','--g1','--g2','--g3','--bg','--fill','--line','--txt','--mut','--nav','--panel','--glow','--glow1','--glow2','--sh'].forEach(k=>root.removeProperty(k))}
 
+
+/* ============ Comptes, roles et super-administrateur ============ */
+const SA_DEFAULT_USER='super-adm',SA_DEFAULT_PASS='Ampandrana';
+let SA_SESSION=false;
+async function sha256(t){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+const hashMemberPass=(id,p)=>sha256('MEMBER_PASS_v1:'+id+':'+p);
+const hashSAPass=p=>sha256('SA_PASS_v1:'+p);
+const hashSecret=(id,a)=>sha256('SECRET_v1:'+id+':'+String(a||'').trim().toLowerCase());
+function loadSA(){try{const s=JSON.parse(localStorage.getItem('fb_sa')||'null');if(s&&s.username&&s.passHash)return s}catch(e){}return null}
+function saveSA(sa){try{localStorage.setItem('fb_sa',JSON.stringify(sa))}catch(e){}}
+async function ensureSA(){let sa=loadSA();if(!sa){sa={username:SA_DEFAULT_USER,passHash:await hashSAPass(SA_DEFAULT_PASS),secretQ:'',secretA:''};saveSA(sa)}return sa}
+async function resetSADefault(){const sa={username:SA_DEFAULT_USER,passHash:await hashSAPass(SA_DEFAULT_PASS),secretQ:'',secretA:''};saveSA(sa);return sa}
+
+async function editMemberAuthFields(m){const sa=await ensureSA();
+  return [
+   {key:'username',label:'Identifiant (facultatif)',value:m?.username||'',hint:'Pour se connecter avec identifiant + mot de passe'},
+   {key:'password',label:m?.username?'Nouveau mot de passe (laisser vide pour ne pas changer)':'Mot de passe',type:'password',value:'',hint:m?.username?'':'Obligatoire si un identifiant est saisi'},
+   {key:'secretQ',label:'Question secrète (pour réinitialiser le mot de passe)',value:m?.secretQ||'',hint:'Ex : Quel est le nom de notre premier chien ?'},
+   {key:'secretA',label:m?.secretA?'Nouvelle réponse secrète (laisser vide pour ne pas changer)':'Réponse secrète',type:'password',value:''}
+  ]}
+async function applyMemberAuth(id,r,existing){const sa=await ensureSA();
+  const uname=(r.username||'').trim();
+  if(!uname){return{username:'',passHash:existing?.username?existing.passHash:'',secretQ:'',secretA:''}}
+  if(uname.toLowerCase()===sa.username.toLowerCase())throw new Error("Cet identifiant est réservé à l'administration. Choisissez-en un autre.");
+  const clash=list('members').find(x=>x.id!==id&&(x.username||'').toLowerCase()===uname.toLowerCase());
+  if(clash)throw new Error('Cet identifiant est déjà utilisé par '+clash.name+'.');
+  let passHash=existing?.username===uname?existing.passHash:'';
+  if(r.password)passHash=await hashMemberPass(id,r.password);
+  if(!passHash)throw new Error('Définissez un mot de passe pour cet identifiant.');
+  let secretA=existing?.username===uname?existing.secretA:'';
+  if(r.secretA)secretA=await hashSecret(id,r.secretA);
+  const secretQ=(r.secretQ||'').trim();
+  return{username:uname,passHash,secretQ,secretA}}
+
+/* ---- connexion par identifiant (admins, super-administrateur) ---- */
+async function adminLogin(){const r=await dialog({title:'Connexion administrateur',ok:'Se connecter',text:'Réservé aux comptes avec identifiant et mot de passe.',fields:[{key:'username',label:'Identifiant',required:true},{key:'password',label:'Mot de passe',type:'password',required:true}],extra:'<button type="button" data-x="forgot" style="background:none;border:0;color:var(--pri);font-weight:700;padding:4px 0;text-align:left;width:100%;margin-top:-6px">Mot de passe oublié ?</button>'});
+  if(r==='forgot')return adminForgot();
+  if(!r)return;const u=r.username.trim().toLowerCase(),sa=await ensureSA();
+  if(u===sa.username.toLowerCase()){if(await hashSAPass(r.password)===sa.passHash){SA_SESSION=true;UI.me=null;render();toast('Connecté en tant que super-administrateur',{ok:true})}else toast('Identifiant ou mot de passe incorrect',{err:true});return}
+  const m=list('members').find(x=>(x.username||'').toLowerCase()===u);
+  if(!m||!m.passHash)return toast('Identifiant ou mot de passe incorrect',{err:true});
+  if(await hashMemberPass(m.id,r.password)!==m.passHash)return toast('Identifiant ou mot de passe incorrect',{err:true});
+  UI.me=m.id;UI.unlocked=true;UI.pin='';UI.tab='home';localStorage.setItem(ME_KEY,UI.me);render();toast('Bienvenue, '+m.name+' ✓',{ok:true})}
+async function adminForgot(){const r1=await dialog({title:'Mot de passe oublié',ok:'Continuer',fields:[{key:'username',label:'Identifiant',required:true}]});
+  if(!r1)return;const u=r1.username.trim().toLowerCase(),sa=await ensureSA();
+  let target=null,isSA=false;
+  if(u===sa.username.toLowerCase()){target=sa;isSA=true}else target=list('members').find(x=>(x.username||'').toLowerCase()===u);
+  if(!target||!target.secretQ)return toast("Aucune question secrète n'est définie pour cet identifiant. Demandez à un administrateur (ou au super-administrateur) de réinitialiser l'accès.",{err:true});
+  const r2=await dialog({title:'Question secrète',text:esc(target.secretQ),ok:'Valider',fields:[{key:'answer',label:'Votre réponse',required:true}]});
+  if(!r2)return;
+  const h=await hashSecret(isSA?'sa':target.id,r2.answer);
+  if(h!==target.secretA)return toast('Réponse incorrecte',{err:true});
+  const r3=await dialog({title:'Nouveau mot de passe',ok:'Enregistrer',fields:[{key:'p1',label:'Nouveau mot de passe',type:'password',required:true},{key:'p2',label:'Confirmer le mot de passe',type:'password',required:true}]});
+  if(!r3)return;if(r3.p1!==r3.p2)return toast('Les deux mots de passe ne correspondent pas',{err:true});
+  if(isSA){sa.passHash=await hashSAPass(r3.p1);saveSA(sa)}else put('members',{...target,passHash:await hashMemberPass(target.id,r3.p1)});
+  toast('Mot de passe mis à jour ✓. Vous pouvez vous reconnecter.',{ok:true})}
+
+/* ---- panneau du super-administrateur ---- */
+function saPanelHtml(){const box=(t,body)=>`<div style="background:rgba(255,255,255,.09);border-radius:20px;padding:18px;margin:18px 0"><b style="font-size:15px">${t}</b>${body}</div>`;
+  const mrows=list('members').map(m=>`<div style="padding:11px 0;border-bottom:1px solid rgba(255,255,255,.12)"><div class="row"><span style="transform:scale(.86)">${avatarM(m,38)}</span><div class="grow"><b>${esc(m.name)}</b><div style="opacity:.75;font-size:12.5px">${m.role==='parent'?'Administrateur':'Membre'}${m.username?(' · identifiant : '+esc(m.username)):' · sans identifiant'}</div></div></div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;margin-top:8px">${m.pin?`<button class="gbtn" style="padding:7px 11px;font-size:12.5px" data-a="sarespin" data-id="${m.id}">Réinit. PIN</button>`:''}${m.username?`<button class="gbtn" style="padding:7px 11px;font-size:12.5px" data-a="sarespw" data-id="${m.id}">Mot de passe</button><button class="gbtn" style="padding:7px 11px;font-size:12.5px;border-color:#ff9a9a" data-a="sarmcred" data-id="${m.id}">Retirer</button>`:''}</div></div>`).join('');
+  return `<div class="gate" style="min-height:100vh"><div class="gate-in" style="max-width:760px;padding-bottom:60px">
+   <div class="row"><div class="glogo">${svg('lock',26)}</div><div class="grow" style="margin-left:4px"><h1 style="font-size:24px;margin:0">Administration</h1><div style="opacity:.85">${esc(DB.meta.family)} · super-administrateur</div></div></div>
+   ${box('Accès des membres',`<div style="margin-top:8px">${mrows||'<div style="opacity:.75;padding:8px 0">Aucun membre pour le moment.</div>'}</div>`)}
+   ${box('Synchronisation',`<p style="opacity:.85;font-size:13px;margin:8px 0 12px">${SYNC.fid?('État : '+({ok:'synchronisé',syncing:'en cours',connecting:'connexion…',offline:'hors ligne',error:'erreur — '+esc(SYNC.err||'')}[SYNC.status]||SYNC.status)+' · '+DIRTY.size+' en attente'):'La synchronisation automatique n’est pas activée sur cet appareil.'}</p><div style="display:flex;flex-wrap:wrap;gap:10px">${SYNC.fid?`<button class="gbtn" data-a="saresync">Forcer une resynchronisation complète</button><button class="gbtn" style="border-color:#ff9a9a" data-a="sasyncoff">Désactiver la synchronisation ici</button>`:'<span style="opacity:.7;font-size:13px">Rien à réparer : allez dans Réglages une fois connecté à un profil.</span>'}</div>`)}
+   ${box('Compte super-administrateur',`<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px"><button class="gbtn" data-a="sachangepw">Changer le mot de passe</button><button class="gbtn" data-a="sachangeq">Changer la question secrète</button><button class="gbtn" style="border-color:#ff9a9a" data-a="sareset">Réinitialiser par défaut</button></div><p style="opacity:.65;font-size:11.5px;margin:12px 0 0">Identifiant par défaut : <b>${SA_DEFAULT_USER}</b> · mot de passe par défaut : <b>${SA_DEFAULT_PASS}</b> (à changer après la première utilisation). Ce compte est propre à cet appareil et n'est jamais envoyé sur le cloud.</p>`)}
+   <button data-a="saexit" style="margin-top:6px;background:none;border:0;color:rgba(255,255,255,.9);font-weight:700">${svg('chevL',16)} Retour à l'écran de connexion</button>
+  </div></div>`}
+
+
+/* ============ Synchronisation locale (Wi-Fi/Bluetooth, sans internet ni cloud) ============ */
+/* Connexion directe entre deux telephones (WebRTC), sans passer par un serveur.
+   Fonctionne sur le meme reseau Wi-Fi (comme Xender), ou meme sans internet si les deux
+   telephones peuvent se joindre sur le reseau local. Un court code doit etre echange une
+   fois (copier-coller, partage Bluetooth/WhatsApp, ou en montrant l'ecran). */
+const P2P={pc:null,ch:null,role:null,status:'idle',recvChunks:[],recvTotal:0,sent:false,stats:null};
+function p2pReset(){if(P2P.pc){try{P2P.pc.close()}catch(e){}}P2P.pc=null;P2P.ch=null;P2P.role=null;P2P.status='idle';P2P.recvChunks=[];P2P.recvTotal=0;P2P.sent=false;P2P.stats=null}
+function encodeSDP(d){return btoa(unescape(encodeURIComponent(JSON.stringify({t:d.type,s:d.sdp}))))}
+function decodeSDP(c){return JSON.parse(decodeURIComponent(escape(atob(String(c).trim().replace(/\s+/g,'')))))}
+function waitIceComplete(pc,ms=5000){if(pc.iceGatheringState==='complete')return Promise.resolve();
+  return new Promise(res=>{const done=()=>{pc.removeEventListener('icegatheringstatechange',chk);res()};const chk=()=>{if(pc.iceGatheringState==='complete')done()};pc.addEventListener('icegatheringstatechange',chk);setTimeout(done,ms)})}
+function p2pSetupChannel(ch){P2P.ch=ch;
+  ch.onopen=()=>{P2P.status='connected';page('p2p');p2pSendData()};
+  ch.onclose=()=>{if(P2P.status==='connected')P2P.status='closed';page('p2p')};
+  ch.onmessage=e=>p2pOnMessage(e.data)}
+async function p2pCreateOffer(){p2pReset();P2P.role='offer';P2P.status='gathering';
+  const pc=new RTCPeerConnection({iceServers:[]});P2P.pc=pc;
+  const ch=pc.createDataChannel('sync',{ordered:true});p2pSetupChannel(ch);
+  pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState)&&P2P.status!=='connected'){P2P.status='error';page('p2p')}};
+  const offer=await pc.createOffer();await pc.setLocalDescription(offer);await waitIceComplete(pc);
+  P2P.code=encodeSDP(pc.localDescription);P2P.status='waiting_answer';return P2P.code}
+async function p2pAcceptOffer(code){p2pReset();P2P.role='answer';P2P.status='gathering';
+  const pc=new RTCPeerConnection({iceServers:[]});P2P.pc=pc;
+  pc.ondatachannel=e=>p2pSetupChannel(e.channel);
+  pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState)&&P2P.status!=='connected'){P2P.status='error';page('p2p')}};
+  const offer=decodeSDP(code);await pc.setRemoteDescription({type:offer.t,sdp:offer.s});
+  const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await waitIceComplete(pc);
+  P2P.code=encodeSDP(pc.localDescription);P2P.status='waiting_connect';return P2P.code}
+async function p2pFinishOffer(answerCode){const a=decodeSDP(answerCode);await P2P.pc.setRemoteDescription({type:a.t,sdp:a.s});P2P.status='connecting'}
+const P2P_CHUNK=14000;
+function p2pSendData(){if(P2P.sent||!P2P.ch||P2P.ch.readyState!=='open')return;P2P.sent=true;
+  const payload=JSON.stringify({...DB,meta:{...DB.meta}});const n=Math.ceil(payload.length/P2P_CHUNK)||1;
+  P2P.ch.send('SIZE:'+n);for(let i=0;i<n;i++)P2P.ch.send('C:'+i+':'+payload.slice(i*P2P_CHUNK,(i+1)*P2P_CHUNK));P2P.ch.send('END')}
+function p2pOnMessage(msg){if(msg.startsWith('SIZE:')){P2P.recvTotal=+msg.slice(5);P2P.recvChunks=new Array(P2P.recvTotal)}
+  else if(msg.startsWith('C:')){const i2=msg.indexOf(':',2),idx=+msg.slice(2,i2);P2P.recvChunks[idx]=msg.slice(i2+1)}
+  else if(msg==='END'){try{const st=importData(P2P.recvChunks.join(''));P2P.stats=st;refreshViews();P2P.status='done';page('p2p');toast('Synchronisation locale terminée ✓',{ok:true})}catch(e){P2P.status='error';page('p2p');toast('Données reçues invalides',{err:true})}}}
+
+function pgP2P(){const S=P2P.status;
+  const stepBox=(t,b)=>`<div class="card"><h3>${t}</h3>${b}</div>`;
+  let body='';
+  if(S==='join_input'){
+    body=stepBox('Collez ici le code reçu du premier téléphone',
+      `<textarea class="inp" id="p2p_off" rows="5" placeholder="Collez le code ici" style="font-family:ui-monospace,monospace;font-size:11px"></textarea>
+       <button class="btn" style="background:var(--pri)" data-a="p2pjoingo">Continuer</button>`);
+  } else if(S==='idle'){
+    body=stepBox('Comment ça marche',`<p style="line-height:1.6;margin:0">Connectez deux téléphones directement, sans internet ni service cloud — comme Xender ou un partage Bluetooth. Les deux téléphones doivent être sur le <b>même réseau Wi-Fi</b> (ou reliés d'une autre façon). Un petit code doit être échangé une seule fois entre les deux, en le copiant ou en le partageant (WhatsApp, Bluetooth…).</p>`)
+     +`<div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px">
+        <button class="btn" style="background:var(--pri);margin-top:0" data-a="p2pstart">${svg('link',18)} Je commence</button>
+        <button class="btn o" style="margin-top:0" data-a="p2pjoin">${svg('smartphone',18)} On m'a donné un code</button>
+      </div>`;
+  } else if(S==='gathering'){
+    body=stepBox('Préparation…','<div class="row" style="gap:10px"><span class="spin-i">'+svg('refresh',20)+'</span><span>Génération du code de connexion…</span></div>');
+  } else if(S==='waiting_answer'){
+    body=stepBox('1. Envoyez ce code à l’autre téléphone',
+      `<textarea class="inp" readonly rows="5" style="font-family:ui-monospace,monospace;font-size:11px">${P2P.code}</textarea>
+       <div class="row" style="gap:10px;margin-top:10px"><button class="btn-s" data-a="p2pcopy">${svg('copy',16)} Copier</button><button class="btn-s" data-a="p2pshare">${svg('share',16)} Partager</button></div>`)
+     +stepBox('2. Collez ici le code que l’autre téléphone vous donne en retour',
+      `<textarea class="inp" id="p2p_in" rows="5" placeholder="Collez le code de réponse ici" style="font-family:ui-monospace,monospace;font-size:11px"></textarea>
+       <button class="btn" style="background:var(--pri)" data-a="p2pconnect">${svg('link',18)} Connecter</button>`);
+  } else if(S==='waiting_connect'){
+    body=stepBox('Envoyez ce code au premier téléphone',
+      `<textarea class="inp" readonly rows="5" style="font-family:ui-monospace,monospace;font-size:11px">${P2P.code}</textarea>
+       <div class="row" style="gap:10px;margin-top:10px"><button class="btn-s" data-a="p2pcopy">${svg('copy',16)} Copier</button><button class="btn-s" data-a="p2pshare">${svg('share',16)} Partager</button></div>
+       <p class="mut" style="margin:12px 0 0">En attente de connexion depuis l’autre téléphone…</p>`);
+  } else if(S==='connecting'){
+    body=stepBox('Connexion en cours…','<div class="row" style="gap:10px"><span class="spin-i">'+svg('refresh',20)+'</span><span>Établissement de la connexion directe…</span></div>');
+  } else if(S==='connected'){
+    body=stepBox('Connecté ✓','<div class="row" style="gap:10px"><span class="spin-i">'+svg('refresh',20)+'</span><span>Envoi et réception des données…</span></div>');
+  } else if(S==='done'){
+    const st=P2P.stats||{added:0,updated:0};
+    body=stepBox('Synchronisation terminée ✓',`<p style="margin:0 0 14px">${st.added+st.updated} élément(s) reçu(s) et ajoutés ou mis à jour. Vos soldes et bilans sont à jour.</p><button class="btn o" data-a="p2pnew">Nouvelle connexion</button>`);
+  } else if(S==='error'){
+    body=stepBox('La connexion a échoué','<p style="margin:0 0 14px">Vérifiez que les deux téléphones sont sur le même réseau Wi-Fi, et que le code a été copié en entier.</p><button class="btn o" data-a="p2pnew">Réessayer</button>');
+  }
+  return{title:'Synchronisation locale',body}}
 /* ============ Etat UI ============ */
 const UI={tab:'home',me:localStorage.getItem(ME_KEY),unlocked:false,pin:'',q:'',ftype:'all',fper:'month',fmem:null,fcat:null,facc:null,ffrom:'',fto:'',bmode:1,bcur:new Date(),bmem:null};
 let F=null,deferredInstall=null;
@@ -381,14 +529,17 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',applyThem
 
 
 /* ============ Rendu principal ============ */
-function render(){applyTheme();const app=$('#app'),me=curMe();
+function render(){applyTheme();const app=$('#app');
+  if(SA_SESSION){app.innerHTML=saPanelHtml();return}
+  const me=curMe();
   if(UI.me&&!me)UI.me=null;
   if(!me){app.innerHTML=picker();updateSyncUI();return}
   if(me.pin&&!UI.unlocked){app.innerHTML=pinScreen(me);return}
-  const body={home,tx:txPage,bil:bilans,set:settings}[UI.tab](),title=T(NAV_ITEMS.find(n=>n[0]===UI.tab)[1]);
-  app.innerHTML=`<div class="shell"><aside class="side">${sideHtml(me)}</aside><main class="main"><header class="topbar"><h1>${title}</h1><div class="grow"></div><span data-sp>${syncPill()}</span><button class="btn-add" data-a="addsheet">${svg('plus',18)}<span>${T('Ajouter')}</span></button></header><div class="page">${body}</div></main></div>${UI.tab!=='set'?`<button class="fab" data-a="addsheet" aria-label="Ajouter">${svg('plus',26)}</button>`:''}<nav class="bnav">${NAV_ITEMS.map(([k,l,i])=>`<button class="${UI.tab===k?'on':''}" data-a="tab" data-v="${k}">${svg(i,22)}${T(l)}</button>`).join('')}</nav>`;
+  if(isGuest()&&UI.tab==='bil')UI.tab='home';
+  const NAV=navItems(),body={home,tx:txPage,bil:bilans,set:settings}[UI.tab](),title=T(NAV.find(n=>n[0]===UI.tab)[1]);
+  app.innerHTML=`<div class="shell"><aside class="side">${sideHtml(me)}</aside><main class="main"><header class="topbar"><h1>${title}</h1><div class="grow"></div><span data-sp>${syncPill()}</span><button class="btn-add" data-a="addsheet">${svg('plus',18)}<span>${T('Ajouter')}</span></button></header><div class="page">${body}</div></main></div>${UI.tab!=='set'?`<button class="fab" data-a="addsheet" aria-label="Ajouter">${svg('plus',26)}</button>`:''}<nav class="bnav">${NAV.map(([k,l,i])=>`<button class="${UI.tab===k?'on':''}" data-a="tab" data-v="${k}">${svg(i,22)}${T(l)}</button>`).join('')}</nav>`;
   updateSyncUI()}
-function sideHtml(me){return `<div class="brand"><span class="logo">${svg('home',22)}</span><div><b>Famille Budget</b><small>${esc(DB.meta.family)}</small></div></div><div class="snav">${NAV_ITEMS.map(([k,l,i])=>`<button class="${UI.tab===k?'on':''}" data-a="tab" data-v="${k}">${svg(i,20)}<span>${T(l)}</span></button>`).join('')}</div><div class="grow"></div><div data-sp>${syncPill()}</div><div class="me">${avatarM(me,38)}<div class="grow"><b>${esc(me.name)}</b><small>${isParent()?'Administrateur':'Membre'}</small></div><button class="ia" data-a="switch" title="Changer de profil" aria-label="Changer de profil">${svg('logout',18)}</button></div>`}
+function sideHtml(me){const NAV=navItems();return `<div class="brand"><span class="logo">${svg('home',22)}</span><div><b>Famille Budget</b><small>${esc(DB.meta.family)}</small></div></div><div class="snav">${NAV.map(([k,l,i])=>`<button class="${UI.tab===k?'on':''}" data-a="tab" data-v="${k}">${svg(i,20)}<span>${T(l)}</span></button>`).join('')}</div><div class="grow"></div><div data-sp>${syncPill()}</div><div class="me">${avatarM(me,38)}<div class="grow"><b>${esc(me.name)}</b><small>${isParent()?(me.id===ownerId()?'Administrateur principal':'Administrateur'):(isGuest()?'Invité':'Membre')}</small></div><button class="ia" data-a="switch" title="Changer de profil" aria-label="Changer de profil">${svg('logout',18)}</button></div>`}
 function syncPill(){const s=SYNC;let cls,ic,txt;
   if(!s.fid){cls='off';ic='cloudOff';txt='Local'}
   else if(s.status==='ok'){cls='ok';ic='cloud';txt='Synchronisé'}
@@ -396,7 +547,7 @@ function syncPill(){const s=SYNC;let cls,ic,txt;
   else if(s.status==='offline'){cls='warn';ic='cloudOff';txt='Hors ligne'+(DIRTY.size?' · '+DIRTY.size+' en attente':'')}
   else{cls='err';ic='alert';txt='Erreur de synchro'}
   return `<button class="sp ${cls}" data-a="syncpage" title="${esc(s.err||txt)}"><i class="${cls==='sync'?'spin-i':''}">${svg(ic,16)}</i><span>${txt}</span></button>`}
-function picker(){return `<div class="gate"><div class="gate-in"><div class="glogo">${svg('home',30)}</div><h1>${esc(DB.meta.family)}</h1><div style="opacity:.85;font-size:17px">${T('Qui êtes-vous ?')}</div><div class="pf">${list('members').map(m=>`<button data-a="pick" data-id="${m.id}"><span class="ring">${avatarM(m,74)}</span><br>${esc(m.name)}</button>`).join('')}</div><button class="gbtn" data-a="syncjoin">${svg('link',18)} Rejoindre une famille avec un code</button></div></div>`}
+function picker(){return `<div class="gate"><div class="gate-in"><div class="glogo">${svg('home',30)}</div><h1>${esc(DB.meta.family)}</h1><div style="opacity:.85;font-size:17px">${T('Qui êtes-vous ?')}</div><div class="pf">${list('members').map(m=>`<button data-a="pick" data-id="${m.id}"><span class="ring">${avatarM(m,74)}</span><br>${esc(m.name)}</button>`).join('')}</div><button class="gbtn" data-a="syncjoin">${svg('link',18)} Rejoindre une famille avec un code</button><button class="gbtn" data-a="adminlogin">${svg('lock',18)} Connexion administrateur</button></div></div>`}
 function pinScreen(me){return `<div class="gate"><div class="gate-in tc"><div style="margin-top:20px">${avatarM(me,76)}</div><h1 style="font-size:26px">${T('Bonjour')}, ${esc(me.name)}</h1><div class="dots">${[0,1,2,3].map(i=>`<i class="${i<UI.pin.length?'f':''}"></i>`).join('')}</div><div style="height:22px;color:var(--gold)">${UI.pinerr?'Code incorrect':''}</div><div class="pad">${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-a="pin" data-v="${n}">${n}</button>`).join('')}<span></span><button data-a="pin" data-v="0">0</button><button data-a="pinback">⌫</button></div><button data-a="switch" style="margin-top:26px;background:none;border:0;color:rgba(255,255,255,.8);font-weight:700">Changer de profil</button></div></div>`}
 
 /* ============ Accueil ============ */
@@ -501,7 +652,7 @@ function closeForm(){F=null;$('#modal').innerHTML=''}
 
 
 /* ============ Boites de dialogue ============ */
-function dialog({title,fields=[],ok='Enregistrer',remove=false,text='',danger=false}){return new Promise(res=>{
+function dialog({title,fields=[],ok='Enregistrer',remove=false,text='',danger=false,extra=''}){return new Promise(res=>{
   const el=document.createElement('div');el.className='ov';
   const fh=fields.map(f=>{const l=f.label?`<label class="lbl">${esc(f.label)}</label>`:'';
     if(f.type==='seg')return l+`<div class="seg" data-k="${f.key}">${f.options.map(o=>`<button type="button" data-v="${o[0]}" class="${f.value===o[0]?'on':''}">${o[1]}</button>`).join('')}</div>`;
@@ -511,7 +662,7 @@ function dialog({title,fields=[],ok='Enregistrer',remove=false,text='',danger=fa
     if(f.type==='photo')return l+`<div class="phbox" data-k="${f.key}" data-val="${esc(f.value||'')}" data-name="${esc(f.name||'?')}" data-color="${f.color}"><span class="ph-prev">${f.value?`<img class="av" alt="" src="${f.value}" style="width:76px;height:76px">`:avatar(f.name||'?',f.color,76)}</span><div class="ph-btns"><label class="btn-s">${svg('camera',16)} Choisir / prendre une photo<input type="file" accept="image/*" hidden data-ph="file"></label><button type="button" class="btn-s" data-ph="rm">Retirer la photo</button></div></div>`;
     if(f.type==='textarea')return l+`<textarea class="inp" data-k="${f.key}" rows="${f.rows||5}" ${f.readonly?'readonly':''} placeholder="${esc(f.hint||'')}">${esc(f.value??'')}</textarea>`;
     return l+`<input class="inp" data-k="${f.key}" type="${f.type==='number'||f.type==='pin'?'text':(f.type||'text')}" ${f.type==='number'||f.type==='pin'?'inputmode="numeric"':''} ${f.type==='pin'?'maxlength="4"':''} placeholder="${esc(f.hint||'')}" value="${esc(f.value??'')}">`}).join('');
-  el.innerHTML=`<div class="dlg" role="dialog" aria-modal="true">${danger?`<div class="dt-ic">${svg('alert',26)}</div>`:''}<h2>${esc(title)}</h2>${text?`<div class="mut" style="margin:4px 0 6px;line-height:1.5">${text}</div>`:''}${fh}<div class="dbtn">${remove?'<button data-x="del" style="color:var(--out)">Supprimer</button>':''}<button data-x="no">Annuler</button><button class="ok ${danger?'danger':''}" data-x="ok">${ok}</button></div></div>`;
+  el.innerHTML=`<div class="dlg" role="dialog" aria-modal="true">${danger?`<div class="dt-ic">${svg('alert',26)}</div>`:''}<h2>${esc(title)}</h2>${text?`<div class="mut" style="margin:4px 0 6px;line-height:1.5">${text}</div>`:''}${fh}${extra||''}<div class="dbtn">${remove?'<button data-x="del" style="color:var(--out)">Supprimer</button>':''}<button data-x="no">Annuler</button><button class="ok ${danger?'danger':''}" data-x="ok">${ok}</button></div></div>`;
   $('#modal2').appendChild(el);
   const onKey=e=>{if(e.key==='Escape')close(null)};document.addEventListener('keydown',onKey);
   const close=v=>{document.removeEventListener('keydown',onKey);el.remove();res(v)};
@@ -521,7 +672,7 @@ function dialog({title,fields=[],ok='Enregistrer',remove=false,text='',danger=fa
     const rm=t.closest&&t.closest('[data-ph=rm]');if(rm){const b=rm.closest('.phbox');b.dataset.val='';b.querySelector('.ph-prev').innerHTML=avatar(b.dataset.name,+b.dataset.color,76);return}
     if(t===el)return close(null);
     const g=t.closest('[data-k]');if(g&&t.dataset.v!==undefined&&g.tagName!=='INPUT'&&g.tagName!=='SELECT'){g.querySelectorAll('[data-v]').forEach(b=>b.classList.remove('on','sel'));t.classList.add('on');return}
-    const x=t.dataset.x;if(x==='no')return close(null);if(x==='del')return close({__delete:true});
+    const x=t.dataset.x;if(x&&x!=='ok'){if(x==='no')return close(null);if(x==='del')return close({__delete:true});return close(x)}
     if(x==='ok'){const v={};for(const f of fields){const n=el.querySelector(`[data-k="${f.key}"]`);let val;
         if(f.type==='photo')val=n.dataset.val;else if(['seg','colors','icons'].includes(f.type)){const on=n.querySelector('.on');val=on?on.dataset.v:f.value;if(f.type==='colors')val=+val}else val=n.value;
         if(f.type==='number')val=parseInt(String(val).replace(/\D/g,''),10)||0;
@@ -647,19 +798,23 @@ function settings(){const me=curMe();
   ${deferredInstall?`<section class="card"><div class="list">${item('smartphone',"Installer l'application",'Ajouter à l’écran d’accueil','install')}</div></section>`:''}
   </div><div>
   ${isParent()?`<section class="card"><h3>Gestion du foyer</h3><div class="list">
-   <div class="li locked"><span class="li-ic">${svg('lock',20)}</span><span class="grow"><b>Nom de la famille</b><small>${esc(DB.meta.family)} · non modifiable</small></span></div>${item('users','Membres de la famille',list('members').length+' membre(s) · ajouter, renommer, supprimer','members')}${item('wallet','Sources de revenus','Papa, Maman, voitures…','sources')}${item('tag','Catégories','Catégories et sous-catégories','cats')}${item('wallet','Comptes','Espèces, MVola, Orange Money…','accounts')}${item('repeat','Opérations récurrentes',list('recurrings').length+' automatique(s)','recs')}</div></section>`:''}
-  <section class="card"><h3>Données et synchronisation</h3><div class="list">${item(SYNC.fid?'cloud':'cloudOff','Synchronisation automatique',st,'syncpage')}${isParent()?item('download','Sauvegarde manuelle','Envoyer ou recevoir un fichier (WhatsApp)','backup'):''}</div></section></div></div>
-  <div class="foot">${esc(DB.meta.family)} · Famille Budget version 2.2</div>`}
+   <div class="li locked"><span class="li-ic">${svg('lock',20)}</span><span class="grow"><b>Nom de la famille</b><small>${esc(DB.meta.family)} · non modifiable</small></span></div>${item('users','Membres de la famille',list('members').length+' membre(s)'+(isOwner()?' · ajouter, renommer, supprimer':' · lecture seule'),'members')}${item('wallet','Sources de revenus','Papa, Maman, voitures…','sources')}${item('tag','Catégories','Catégories et sous-catégories','cats')}${item('wallet','Comptes','Espèces, MVola, Orange Money…','accounts')}${item('repeat','Opérations récurrentes',list('recurrings').length+' automatique(s)','recs')}</div></section>`:''}
+  <section class="card"><h3>Données et synchronisation</h3><div class="list">${item(SYNC.fid?'cloud':'cloudOff','Synchronisation',SYNC.fid?st:'Internet (cloud) ou Wi-Fi local, sans internet','syncpage')}${isParent()?item('download','Sauvegarde manuelle','Envoyer ou recevoir un fichier (WhatsApp)','backup'):''}</div></section></div></div>
+  <div class="foot">${esc(DB.meta.family)} · Famille Budget version 2.4<br><button data-a="saback" style="background:none;border:0;color:var(--mut);text-decoration:underline;font-size:12px;margin-top:6px">Administration</button></div>`}
 
-async function editMember(m,self){const isNew=!m;const canRole=isNew||(isParent()&&m.id!==UI.me);
+async function editMember(m,self){if(!self&&!isOwner()&&!SA_SESSION)return toast("Seul l'administrateur principal de la famille peut ajouter ou modifier les membres.",{err:true});
+  const isNew=!m;const canRole=isNew||(isParent()&&m.id!==UI.me);
   const color=m?.color??PAL[list('members').length%PAL.length];
   const fields=[{key:'photo',label:'Photo de profil',type:'photo',value:m?.photo||'',name:m?.name||'?',color},{key:'name',label:'Nom du membre',value:m?.name||'',required:true,hint:'Ex : Papa, Maman, Tiana…'}];
-  if(canRole)fields.push({key:'role',label:'Rôle',type:'seg',options:[['parent','Administrateur'],['child','Enfant / membre']],value:m?.role||'child'});
+  if(canRole)fields.push({key:'role',label:'Rôle',type:'seg',options:[['parent','Administrateur'],['child','Membre (enfant)'],['guest','Invité (accès restreint)']],value:m?.role||'child'});
   fields.push({key:'pin',label:'Code PIN (facultatif)',type:'pin',value:m?.pin||''},{key:'color',label:'Couleur (si pas de photo)',type:'colors',value:color});
   if(isNew)fields.push({key:'src',label:'Créer une source de revenus à son nom',type:'seg',options:[['1','Oui'],['0','Non']],value:'0'});
-  const r=await dialog({title:isNew?'Ajouter un membre':(self?'Mon profil':'Modifier le membre'),fields,ok:isNew?'Ajouter':'Enregistrer',text:isNew?'':'Le changement de nom conserve toutes les opérations et l\'historique.'});
+  if(!self&&isParent())fields.push(...await editMemberAuthFields(m));
+  const r=await dialog({title:isNew?'Ajouter un membre':(self?'Mon profil':'Modifier le membre'),fields,ok:isNew?'Ajouter':'Enregistrer',text:isNew?"Seul un administrateur peut ajouter un membre.":'Le changement de nom conserve toutes les opérations et l\'historique.'});
   if(!r)return;const id=m?.id||uid();
-  put('members',{...(m||{}),id,name:r.name,role:canRole?r.role:(m?.role||'child'),pin:r.pin,color:r.color,photo:r.photo||''});
+  let auth={username:m?.username||'',passHash:m?.passHash||'',secretQ:m?.secretQ||'',secretA:m?.secretA||''};
+  if(!self&&isParent()){try{auth=await applyMemberAuth(id,r,m)}catch(e){return toast(e.message,{err:true})}}
+  put('members',{...(m||{}),id,name:r.name,role:canRole?r.role:(m?.role||'child'),pin:r.pin,color:r.color,photo:r.photo||'',...auth});
   if(!isNew&&r.name!==m.name)list('sources').filter(s=>s.type==='person'&&s.member_id===id).forEach(s=>put('sources',{...s,name:r.name}));
   if(isNew&&r.src==='1')put('sources',{id:uid(),name:r.name,type:'person',member_id:id,active:1});
   if(SUB==='members')page('members');render();toast(isNew?'Membre ajouté ✓':'Profil enregistré ✓',{ok:true})}
@@ -675,11 +830,13 @@ async function newSubIn(parent){const r=await dialog({title:'Nouvelle sous-caté
 
 /* ---- pages secondaires ---- */
 let SUB=null;
-function page(name){SUB=name;const h={members:pgMembers,sources:pgSources,cats:pgCats,accounts:pgAccounts,recs:pgRecs,sync:pgSync,backup:pgBackup}[name]();
+function page(name){SUB=name;const h={members:pgMembers,sources:pgSources,cats:pgCats,accounts:pgAccounts,recs:pgRecs,sync:pgSync,syncmenu:pgSyncMenu,p2p:pgP2P,backup:pgBackup}[name]();
   $('#modal').innerHTML=`<div class="sheet wide"><div class="in-"><header class="sh"><button class="ib" data-a="closepage" aria-label="Retour">${svg('chevL',20)}</button><h2 class="grow">${h.title}</h2>${h.action||''}</header>${h.body}</div></div>`}
 const row=(l,r,a,id)=>`<div class="tile" ${a?`data-a="${a}" data-id="${id}"`:''}>${l}${r}</div>`;
-function pgMembers(){return{title:'Membres de la famille',action:`<button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newmember">${svg('plus',18)} Ajouter</button>`,
-  body:`<p class="mut" style="margin:0 4px 14px">Ajoutez, renommez ou supprimez les membres. Toutes leurs opérations restent associées à eux, même après un changement de nom.</p><div class="mgrid">${list('members').map(m=>{const n=list('transactions').filter(t=>t.member_id===m.id).length;return `<div class="mcard"><div class="mtop">${avatarM(m,52)}<div class="grow"><b style="font-size:16px">${esc(m.name)}</b><br><span class="badge ${m.role==='parent'?'b-p':'b-c'}">${m.role==='parent'?'Administrateur':'Enfant / membre'}</span></div>${m.pin?svg('lock',16,'mut'):''}</div><div class="mstat">${n} opération(s)${m.id===UI.me?' · <b>vous</b>':''}</div><div class="macts"><button class="btn-s" data-a="editmember" data-id="${m.id}">${svg('edit',16)} Modifier</button><button class="btn-s danger" data-a="delmember" data-id="${m.id}">${svg('trash',16)} Supprimer</button></div></div>`}).join('')}</div>`}}
+function roleBadge(m){if(m.id===ownerId())return '<span class="badge b-p">Administrateur principal</span>';if(m.role==='parent')return '<span class="badge b-p">Administrateur</span>';if(m.role==='guest')return '<span class="badge" style="background:var(--fill);color:var(--mut)">Invité</span>';return '<span class="badge b-c">Membre (enfant)</span>'}
+function pgMembers(){const canManage=isOwner()||SA_SESSION;return{title:'Membres de la famille',action:canManage?`<button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newmember">${svg('plus',18)} Ajouter</button>`:'',
+  body:(canManage?'':`<div class="tip" style="background:var(--gold-bg);border:1px solid #f5d98b;border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:13px"><b>Lecture seule.</b> Seul l'administrateur principal peut ajouter, modifier ou supprimer un membre.</div>`)+
+  `<p class="mut" style="margin:0 4px 14px">Toutes les opérations restent associées au bon membre, même après un changement de nom.</p><div class="mgrid">${list('members').map(m=>{const n=list('transactions').filter(t=>t.member_id===m.id).length;return `<div class="mcard"><div class="mtop">${avatarM(m,52)}<div class="grow"><b style="font-size:16px">${esc(m.name)}</b><br>${roleBadge(m)}</div>${m.pin?svg('lock',16,'mut'):''}</div><div class="mstat">${n} opération(s)${m.id===UI.me?' · <b>vous</b>':''}${m.username?(' · identifiant : '+esc(m.username)):''}</div>${canManage?`<div class="macts"><button class="btn-s" data-a="editmember" data-id="${m.id}">${svg('edit',16)} Modifier</button>${m.id!==ownerId()?`<button class="btn-s danger" data-a="delmember" data-id="${m.id}">${svg('trash',16)} Supprimer</button>`:''}</div>`:''}</div>`}).join('')}</div>`}}
 function pgSources(){return{title:T('Sources de revenus'),action:`<button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newsource">${svg('plus',18)} Ajouter</button>`,body:`<p class="mut" style="margin:0 4px 12px">Touchez une source pour la renommer (ex. « Voiture 1 » devient « Taxi Toyota »). L'historique est conservé.</p>`+list('sources').map(s=>`<div class="tile"><div class="bub" style="background:#12b76a26" data-a="editsource" data-id="${s.id}">${srcIcon(s.type)}</div><div class="grow" data-a="editsource" data-id="${s.id}"><b style="${s.active?'':'color:var(--mut)'}">${esc(s.name)}</b><div class="t2">${s.type==='vehicle'?'Voiture':s.type==='person'?'Personne':'Autre'}${s.active?'':' · désactivée'}</div></div><button class="ia" data-a="editsource" data-id="${s.id}" aria-label="Modifier">${svg('edit',18)}</button><button class="sw2 ${s.active?'on':''}" data-a="togsource" data-id="${s.id}" aria-label="Activer / désactiver"></button></div>`).join('')}}
 function pgCats(){return{title:T('Catégories'),action:`<button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newtop">${svg('plus',18)} Ajouter</button>`,body:topCats().map(c=>`<div class="panel" style="padding:6px 16px"><details class="acc" style="border:0"><summary><div class="bub" style="width:38px;height:38px;font-size:19px;background:${col(c.color)}26">${emo(c.icon)}</div><div class="grow"><b>${esc(c.name)}</b><div class="t2">${subsOf(c.id).length} sous-catégorie(s)</div></div></summary>${subsOf(c.id).map(s=>`<div class="kv"><span>${esc(s.name)}</span><span><button class="ia" data-a="rensub" data-id="${s.id}" aria-label="Renommer">${svg('edit',16)}</button><button class="ia danger" data-a="delsub" data-id="${s.id}" aria-label="Supprimer">${svg('trash',16)}</button></span></div>`).join('')}<div class="chips" style="padding:8px 0"><button class="chip" data-a="addsub" data-id="${c.id}">＋ Sous-catégorie</button><button class="chip" data-a="rentop" data-id="${c.id}">Renommer</button></div></details></div>`).join('')}}
 function pgAccounts(){return{title:T('Comptes'),action:`<button class="ib" data-a="transfer" title="Transfert" aria-label="Transfert">${svg('swap',18)}</button><button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newaccount">${svg('plus',18)} Ajouter</button>`,body:`<div class="hero" style="margin-top:0"><div class="row"><span class="grow" style="opacity:.8">Total tous comptes</span><b style="font-size:22px" class="num">${ar(totalBalance())}</b></div></div>`+list('accounts').map(a=>row('<div class="bub" style="background:var(--fill)">💳</div>',`<div class="grow"><b>${esc(a.name)}</b></div><b class="num">${ar(balance(a.id))}</b>`,'editaccount',a.id)).join('')}}
@@ -769,6 +926,7 @@ function pgSync(){if(!SYNC.fid)return{title:'Synchronisation automatique',body:`
   <div class="card" style="line-height:1.6"><h3>Vous êtes le propriétaire ?</h3>Créez d’abord un projet Firebase gratuit en suivant le fichier <b>GUIDE_SYNCHRONISATION</b>, puis appuyez sur « Activer ». Vous obtiendrez un code d’invitation à envoyer aux autres membres.</div><button class="btn" style="background:var(--pri)" data-a="syncenable">${svg('cloud',18)} Activer la synchronisation</button>
   <div class="card" style="margin-top:14px;line-height:1.6"><h3>Un membre vous a envoyé un code ?</h3>Appuyez sur « Rejoindre » et collez le code d’invitation reçu.</div><button class="btn o" data-a="syncjoin">${svg('link',18)} Rejoindre avec un code</button>`};
   return{title:'Synchronisation automatique',body:`<div class="card" id="syncstat">${syncStatHtml()}</div><button class="btn" style="background:var(--pri)" data-a="syncnow">${svg('refresh',18)} Synchroniser maintenant</button>${isParent()?`<button class="btn o" data-a="syncinvite">${svg('link',18)} Inviter un membre (code d’invitation)</button>`:''}<button class="btn o" style="color:var(--out)" data-a="syncoff">${svg('cloudOff',18)} Désactiver sur ce téléphone</button><p class="mut" style="margin:14px 4px;font-size:13px;line-height:1.5">Désactiver la synchronisation ne supprime aucune donnée : elles restent sur ce téléphone et dans le cloud de la famille.</p>`}}
+function pgSyncMenu(){return{title:'Synchronisation',body:`<div class="list">${(()=>{const item=(ic,t,s2,a)=>`<button class="li" data-a="${a}"><span class="li-ic">${svg(ic,20)}</span><span class="grow"><b>${t}</b><small>${s2}</small></span>${svg('chevR',18,'mut')}</button>`;return item(SYNC.fid?'cloud':'cloudOff','Synchronisation automatique (Internet)',SYNC.fid?'Activée · via le cloud familial':'Non activée · nécessite une connexion internet','syncauto')+item('smartphone','Synchronisation locale (même Wi-Fi, sans internet)','Connecter deux téléphones directement, comme Xender','p2psync')})()}</div>`}}
 
 /* ============ Actions ============ */
 const A={
@@ -836,6 +994,7 @@ Object.assign(A,{
    del('transactions',t.id);closeForm();refreshViews();toast('Opération supprimée',{undo:()=>{put('transactions',{...t,deleted:0});refreshViews();toast('Opération restaurée ✓',{ok:true})}})},
  toastundo:()=>{const e=$('#toast'),f=e._undo;e.classList.remove('show');e._undo=null;if(f)f()},
  delmember:async el=>{const m=byId('members',el.dataset.id);if(!m)return;
+   if(!isOwner()&&!SA_SESSION)return toast("Seul l'administrateur principal de la famille peut supprimer un membre.",{err:true});
    if(m.id===UI.me)return toast('Vous ne pouvez pas supprimer le profil que vous utilisez. Changez d’abord de profil.',{err:true});
    if(m.role==='parent'&&list('members').filter(x=>x.role==='parent').length<=1)return toast('Il doit rester au moins un administrateur.',{err:true});
    const n=list('transactions').filter(t=>t.member_id===m.id||t.created_by===m.id).length;
@@ -847,7 +1006,8 @@ Object.assign(A,{
  famname:()=>toast('Le nom de la famille ne peut pas être modifié.'),
  pal:el=>{PREFS.pal=el.dataset.v;savePrefs();render()},
  sharepdf:sharePdf,
- syncpage:()=>page('sync'),
+ syncpage:()=>page('syncmenu'),
+ syncauto:()=>page('sync'),
  backup:()=>page('backup'),
  syncenable:async()=>{const r=await dialog({title:'Activer la synchronisation',ok:'Activer',text:'Collez ici la configuration Firebase (le bloc « firebaseConfig » copié depuis la console, voir le guide).',fields:[{key:'cfg',type:'textarea',rows:8,hint:'const firebaseConfig = { apiKey: "…", authDomain: "…", projectId: "…", appId: "…" };',value:'',required:true}]});
    if(!r)return;try{enableSync(r.cfg);page('sync');toast('Synchronisation activée ✓',{ok:true});setTimeout(()=>A.syncinvite(),400)}catch(e){toast(e.message,{err:true})}},
@@ -868,8 +1028,53 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&SYNC.fid)
 setInterval(()=>{if(!SYNC.fid||!navigator.onLine)return;if(!_unsub)startSync();else if(DIRTY.size)pushDirty()},30000);
 
 
+Object.assign(A,{
+ adminlogin:()=>adminLogin(),
+ adminforgot:()=>adminForgot(),
+ saexit:()=>{SA_SESSION=false;render()},
+ saback:()=>{UI.me=null;SA_SESSION=false;render();adminLogin()},
+ sarespin:async el=>{const m=byId('members',el.dataset.id);if(!m)return;if(!await confirmBox('Retirer le code PIN de '+m.name+' ? Il pourra rouvrir son profil sans code.'))return;put('members',{...m,pin:''});SA_SESSION=true;render();toast('Code PIN retiré ✓',{ok:true})},
+ sarespw:async el=>{const m=byId('members',el.dataset.id);if(!m)return;
+   const r=await dialog({title:'Nouveau mot de passe pour '+m.name,ok:'Enregistrer',fields:[{key:'p1',label:'Nouveau mot de passe',type:'password',required:true},{key:'p2',label:'Confirmer',type:'password',required:true}]});
+   if(!r)return;if(r.p1!==r.p2)return toast('Les deux mots de passe ne correspondent pas',{err:true});
+   put('members',{...m,passHash:await hashMemberPass(m.id,r.p1)});SA_SESSION=true;render();toast('Mot de passe de '+m.name+' mis à jour ✓',{ok:true})},
+ sarmcred:async el=>{const m=byId('members',el.dataset.id);if(!m)return;if(!await confirmDel('Retirer l’identifiant de '+m.name+' ?','Il ne pourra plus se connecter par identifiant et mot de passe, seulement en touchant son profil'+(m.pin?' (avec son code PIN)':'')+'.','Retirer'))return;
+   put('members',{...m,username:'',passHash:'',secretQ:'',secretA:''});SA_SESSION=true;render();toast('Identifiant retiré ✓',{ok:true})},
+ saresync:()=>{markAllDirty();scheduleSync(200);SA_SESSION=true;render();toast('Nouvelle synchronisation complète lancée',{ok:true})},
+ sasyncoff:async()=>{if(!await confirmDel('Désactiver la synchronisation sur cet appareil ?','Aucune donnée n’est supprimée.','Désactiver'))return;stopSync();SA_SESSION=true;render();toast('Synchronisation désactivée sur cet appareil')},
+ sachangepw:async()=>{const sa=await ensureSA();
+   const r=await dialog({title:'Changer le mot de passe',ok:'Enregistrer',fields:[{key:'cur',label:'Mot de passe actuel',type:'password',required:true},{key:'p1',label:'Nouveau mot de passe',type:'password',required:true},{key:'p2',label:'Confirmer',type:'password',required:true}]});
+   if(!r)return;if(await hashSAPass(r.cur)!==sa.passHash)return toast('Mot de passe actuel incorrect',{err:true});
+   if(r.p1!==r.p2)return toast('Les deux nouveaux mots de passe ne correspondent pas',{err:true});
+   sa.passHash=await hashSAPass(r.p1);saveSA(sa);toast('Mot de passe mis à jour ✓',{ok:true})},
+ sachangeq:async()=>{const sa=await ensureSA();
+   const r=await dialog({title:'Changer la question secrète',ok:'Enregistrer',fields:[{key:'cur',label:'Mot de passe actuel',type:'password',required:true},{key:'q',label:'Nouvelle question secrète',value:sa.secretQ||'',required:true},{key:'a',label:'Nouvelle réponse secrète',type:'password',required:true}]});
+   if(!r)return;if(await hashSAPass(r.cur)!==sa.passHash)return toast('Mot de passe actuel incorrect',{err:true});
+   sa.secretQ=r.q.trim();sa.secretA=await hashSecret('sa',r.a);saveSA(sa);toast('Question secrète mise à jour ✓',{ok:true})},
+ sareset:async()=>{if(!await confirmDel('Réinitialiser le super-administrateur ?','L’identifiant et le mot de passe redeviennent ceux par défaut ('+SA_DEFAULT_USER+' / '+SA_DEFAULT_PASS+') sur cet appareil. À faire seulement si vous avez perdu l’accès.','Réinitialiser'))return;
+   await resetSADefault();toast('Super-administrateur réinitialisé aux valeurs par défaut ✓',{ok:true})}
+});
+
+
+
+Object.assign(A,{
+ p2psync:()=>{p2pReset();page('p2p')},
+ p2pstart:async()=>{try{await p2pCreateOffer();page('p2p')}catch(e){toast('Impossible de créer la connexion : '+e.message,{err:true})}},
+ p2pjoin:()=>{P2P.status='join_input';page('p2p')},
+ p2pjoingo:async()=>{const v=$('#p2p_off')?.value?.trim();if(!v)return toast('Collez le code reçu',{err:true});
+   try{await p2pAcceptOffer(v);page('p2p')}catch(e){toast('Code invalide ou illisible',{err:true})}},
+ p2pcopy:async()=>{try{await navigator.clipboard.writeText(P2P.code);toast('Code copié ✓',{ok:true})}catch(e){toast('Copie impossible : sélectionnez et copiez le texte manuellement',{err:true})}},
+ p2pshare:async()=>{try{if(navigator.share)await navigator.share({text:P2P.code});else{await navigator.clipboard.writeText(P2P.code);toast('Code copié ✓ : collez-le dans WhatsApp ou un message',{ok:true})}}catch(e){}},
+ p2pconnect:async()=>{const v=$('#p2p_in')?.value?.trim();if(!v)return toast('Collez le code reçu de l’autre téléphone',{err:true});
+   try{await p2pFinishOffer(v);page('p2p')}catch(e){P2P.status='error';page('p2p')}},
+ p2pnew:()=>{p2pReset();page('p2p')}
+});
+
+
+
 /* ============ Demarrage ============ */
-function migrate(){let ch=false;[['s_papa','m_papa'],['s_maman','m_maman']].forEach(([s,m])=>{const r=DB.sources.find(x=>x.id===s);if(r&&r.member_id===undefined&&DB.members.some(x=>x.id===m)){r.member_id=m;ch=true}});if(ch)persist()}
+function migrate(){let ch=false;
+  if(!DB.meta.ownerId){const p=list('members').find(m=>m.role==='parent');if(p){DB.meta.ownerId=p.id;ch=true}}[['s_papa','m_papa'],['s_maman','m_maman']].forEach(([s,m])=>{const r=DB.sources.find(x=>x.id===s);if(r&&r.member_id===undefined&&DB.members.some(x=>x.id===m)){r.member_id=m;ch=true}});if(ch)persist()}
 migrate();loadSync();runRecurring();render();
 {const sp=$('#splash');if(sp){sp.classList.add('hide');setTimeout(()=>sp.remove(),500)}}
 if(SYNC.fid)startSync();
