@@ -9,7 +9,7 @@
 <title>Famille Budget</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180-apple.png"><link rel="apple-touch-icon" sizes="1024x1024" href="icon-1024-apple.png"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Budget">
 <style>
 :root{--in:#12b76a;--in-bg:#e6f8ef;--out:#f0445a;--out-bg:#fdeceb;--gold:#f5b83d;--gold-bg:#fff4d9;--info:#3b82f6;--r:22px;--bg:#F6F4FF;--panel:#fff;--txt:#1B1440;--mut:#6F6A8C;--pri:#6D4AFF;--pri2:#4A2BD8;--pri3:#9B6BFF;--g1:#3A1DB8;--g2:#6D4AFF;--g3:#E24FA8;--fill:#EEEAFE;--line:#E4DFF7;--nav:#fff;--glow:rgba(109,74,255,.30);--glow1:rgba(109,74,255,.13);--glow2:rgba(255,95,162,.12);--sh:0 1px 2px rgba(20,16,40,.04),0 10px 28px rgba(109,74,255,.10)}
 :root[data-dark="1"]{--in:#34d399;--in-bg:#12362a;--out:#ff7a8a;--out-bg:#3a1620;--gold-bg:#3a2f12}
@@ -211,7 +211,7 @@ label.pal input[type=color]{cursor:pointer}
 'use strict';
 /* ============ Donnees ============ */
 const KEY='famille_budget_v1',ME_KEY='fb_me',PREF_KEY='fb_prefs';
-const TABLES=['members','sources','categories','accounts','transactions','transfers','recurrings'];
+const TABLES=['members','sources','categories','accounts','transactions','transfers','recurrings','access','settings'];
 const PAL=[0xFF2E9E6B,0xFF3B82C4,0xFFE0A030,0xFFD24B30,0xFF8E5BC7,0xFF17A2B8,0xFFE0709A,0xFF6C8B3A,0xFFB8623A,0xFF5B6CC7,0xFF7A8794,0xFFC7A02E];
 const EMO={food:'🍚',hygiene:'🧻',clean:'🧽',power:'💡',rent:'🏠',transport:'🚌',health:'💊',school:'🎓',phone:'📱',clothes:'👕',fun:'🎉',gift:'🎁',car:'🚗',unexpected:'⚠️',other:'📦',shop:'🛒',baby:'🍼',pet:'🐾',work:'💼',savings:'🐷'};
 const col=c=>typeof c==='string'?c:'#'+((c&0xFFFFFF)).toString(16).padStart(6,'0');
@@ -285,7 +285,7 @@ const isParent=()=>curMe()?.role==='parent';
 const isGuest=()=>curMe()?.role==='guest';
 const ownerId=()=>DB.meta.ownerId||(list('members').find(m=>m.role==='parent')||{}).id||null;
 const isOwner=()=>!!curMe()&&curMe().id===ownerId();
-const visible=()=>isParent()?txs():txs().filter(t=>t.member_id===UI.me||t.created_by===UI.me);
+const visible=()=>{if(isParent())return txs();const extra=(typeof approvedAccess==='function')?approvedAccess():[];return txs().filter(t=>t.member_id===UI.me||t.created_by===UI.me||extra.includes(t.member_id))};
 const topCats=()=>list('categories').filter(c=>!c.parent_id);
 const subsOf=id=>list('categories').filter(c=>c.parent_id===id);
 const vehicles=()=>list('sources').filter(s=>s.type==='vehicle'&&s.active);
@@ -356,6 +356,7 @@ function photoFromFile(file,max=128){return new Promise((res,rej)=>{const img=ne
   img.onerror=()=>rej(new Error('Image illisible'));img.src=u})}
 ICONS.doc='<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/>';
 ICONS.drop='<path d="M12 3s7 7.5 7 12a7 7 0 0 1-14 0c0-4.5 7-12 7-12z"/>';
+ICONS.mail='<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/>';
 /* ---- couleur personnalisee : un seul reglage de teinte -> palette complete ---- */
 function hexToRgb(h){h=(h||'#6D4AFF').replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');const n=parseInt(h,16)||0x6D4AFF;return [n>>16&255,n>>8&255,n&255]}
 function rgbToHex(r,g,b){return '#'+[r,g,b].map(x=>Math.max(0,Math.min(255,Math.round(x))).toString(16).padStart(2,'0')).join('')}
@@ -393,12 +394,13 @@ async function editMemberAuthFields(m){const sa=await ensureSA();
   return [
    {key:'username',label:'Identifiant (facultatif)',value:m?.username||'',hint:'Pour se connecter avec identifiant + mot de passe'},
    {key:'password',label:m?.username?'Nouveau mot de passe (laisser vide pour ne pas changer)':'Mot de passe',type:'password',value:'',hint:m?.username?'':'Obligatoire si un identifiant est saisi'},
-   {key:'secretQ',label:'Question secrète (pour réinitialiser le mot de passe)',value:m?.secretQ||'',hint:'Ex : Quel est le nom de notre premier chien ?'},
+   {key:'email',label:'E-mail (facultatif, pour récupérer le mot de passe)',value:m?.email||'',hint:'exemple@gmail.com'},
+   {key:'secretQ',label:'Question secrète (autre moyen de récupération)',value:m?.secretQ||'',hint:'Ex : Quel est le nom de notre premier chien ?'},
    {key:'secretA',label:m?.secretA?'Nouvelle réponse secrète (laisser vide pour ne pas changer)':'Réponse secrète',type:'password',value:''}
   ]}
 async function applyMemberAuth(id,r,existing){const sa=await ensureSA();
   const uname=(r.username||'').trim();
-  if(!uname){return{username:'',passHash:existing?.username?existing.passHash:'',secretQ:'',secretA:''}}
+  if(!uname){return{username:'',passHash:existing?.username?existing.passHash:'',email:'',secretQ:'',secretA:''}}
   if(uname.toLowerCase()===sa.username.toLowerCase())throw new Error("Cet identifiant est réservé à l'administration. Choisissez-en un autre.");
   const clash=list('members').find(x=>x.id!==id&&(x.username||'').toLowerCase()===uname.toLowerCase());
   if(clash)throw new Error('Cet identifiant est déjà utilisé par '+clash.name+'.');
@@ -408,30 +410,50 @@ async function applyMemberAuth(id,r,existing){const sa=await ensureSA();
   let secretA=existing?.username===uname?existing.secretA:'';
   if(r.secretA)secretA=await hashSecret(id,r.secretA);
   const secretQ=(r.secretQ||'').trim();
-  return{username:uname,passHash,secretQ,secretA}}
+  return{username:uname,passHash,email:(r.email||'').trim(),secretQ,secretA}}
 
 /* ---- connexion par identifiant (admins, super-administrateur) ---- */
+async function tryLogin(username,password){const u=(username||'').trim().toLowerCase(),sa=await ensureSA();
+  if(!u||!password)return{ok:false,msg:'Saisissez votre identifiant et votre mot de passe.'};
+  if(u===sa.username.toLowerCase()){
+    if(await hashSAPass(password)===sa.passHash){SA_SESSION=true;UI.me=null;render();return{ok:true,sa:true}}
+    return{ok:false,msg:'Identifiant ou mot de passe incorrect.'}}
+  const m=list('members').find(x=>(x.username||'').toLowerCase()===u);
+  if(!m||!m.passHash)return{ok:false,msg:'Identifiant ou mot de passe incorrect.'};
+  if(await hashMemberPass(m.id,password)!==m.passHash)return{ok:false,msg:'Identifiant ou mot de passe incorrect.'};
+  UI.me=m.id;UI.unlocked=true;UI.pin='';UI.tab='home';localStorage.setItem(ME_KEY,UI.me);render();return{ok:true,name:m.name}}
 async function adminLogin(){const r=await dialog({title:'Connexion administrateur',ok:'Se connecter',text:'Réservé aux comptes avec identifiant et mot de passe.',fields:[{key:'username',label:'Identifiant',required:true},{key:'password',label:'Mot de passe',type:'password',required:true}],extra:'<button type="button" data-x="forgot" style="background:none;border:0;color:var(--pri);font-weight:700;padding:4px 0;text-align:left;width:100%;margin-top:-6px">Mot de passe oublié ?</button>'});
   if(r==='forgot')return adminForgot();
-  if(!r)return;const u=r.username.trim().toLowerCase(),sa=await ensureSA();
-  if(u===sa.username.toLowerCase()){if(await hashSAPass(r.password)===sa.passHash){SA_SESSION=true;UI.me=null;render();toast('Connecté en tant que super-administrateur',{ok:true})}else toast('Identifiant ou mot de passe incorrect',{err:true});return}
-  const m=list('members').find(x=>(x.username||'').toLowerCase()===u);
-  if(!m||!m.passHash)return toast('Identifiant ou mot de passe incorrect',{err:true});
-  if(await hashMemberPass(m.id,r.password)!==m.passHash)return toast('Identifiant ou mot de passe incorrect',{err:true});
-  UI.me=m.id;UI.unlocked=true;UI.pin='';UI.tab='home';localStorage.setItem(ME_KEY,UI.me);render();toast('Bienvenue, '+m.name+' ✓',{ok:true})}
+  if(!r)return;const res=await tryLogin(r.username,r.password);
+  if(!res.ok)return toast(res.msg,{err:true});
+  toast(res.sa?'Connecté en tant que super-administrateur':('Bienvenue, '+res.name+' ✓'),{ok:true})}
+async function setNewPassword(target,isSA){const r3=await dialog({title:'Nouveau mot de passe',ok:'Enregistrer',fields:[{key:'p1',label:'Nouveau mot de passe',type:'password',required:true},{key:'p2',label:'Confirmer le mot de passe',type:'password',required:true}]});
+  if(!r3)return false;if(r3.p1!==r3.p2){toast('Les deux mots de passe ne correspondent pas',{err:true});return false}
+  if(isSA){const sa=await ensureSA();sa.passHash=await hashSAPass(r3.p1);saveSA(sa)}else put('members',{...target,passHash:await hashMemberPass(target.id,r3.p1)});
+  toast('Mot de passe mis à jour ✓. Vous pouvez vous reconnecter.',{ok:true});return true}
+async function forgotBySecret(target,isSA){if(!target.secretQ)return toast("Aucune question secrète n'est définie pour cet identifiant.",{err:true});
+  const r2=await dialog({title:'Question secrète',text:esc(target.secretQ),ok:'Valider',fields:[{key:'answer',label:'Votre réponse',required:true}]});
+  if(!r2)return;const h=await hashSecret(isSA?'sa':target.id,r2.answer);
+  if(h!==target.secretA)return toast('Réponse incorrecte',{err:true});
+  await setNewPassword(target,isSA)}
+async function forgotByEmail(target,isSA){if(!target.email)return toast("Aucun e-mail n'est enregistré pour ce compte.",{err:true});
+  try{await sendResetCode(target.email,target.username||target.name);toast('Code envoyé par e-mail ✓ (vérifiez aussi les indésirables)',{ok:true})}
+  catch(e){return toast("Envoi impossible : "+e.message+" — utilisez plutôt la question secrète si disponible.",{err:true})}
+  const r=await dialog({title:'Code reçu par e-mail',text:'Un code à 6 chiffres vient d’être envoyé à '+esc(target.email)+'.',ok:'Valider',fields:[{key:'code',label:'Code reçu',required:true}]});
+  if(!r)return;
+  if(!PENDING_CODE||PENDING_CODE.email!==target.email||Date.now()>PENDING_CODE.exp||r.code.trim()!==PENDING_CODE.code)return toast('Code incorrect ou expiré',{err:true});
+  await setNewPassword(target,isSA)}
 async function adminForgot(){const r1=await dialog({title:'Mot de passe oublié',ok:'Continuer',fields:[{key:'username',label:'Identifiant',required:true}]});
   if(!r1)return;const u=r1.username.trim().toLowerCase(),sa=await ensureSA();
   let target=null,isSA=false;
   if(u===sa.username.toLowerCase()){target=sa;isSA=true}else target=list('members').find(x=>(x.username||'').toLowerCase()===u);
-  if(!target||!target.secretQ)return toast("Aucune question secrète n'est définie pour cet identifiant. Demandez à un administrateur (ou au super-administrateur) de réinitialiser l'accès.",{err:true});
-  const r2=await dialog({title:'Question secrète',text:esc(target.secretQ),ok:'Valider',fields:[{key:'answer',label:'Votre réponse',required:true}]});
-  if(!r2)return;
-  const h=await hashSecret(isSA?'sa':target.id,r2.answer);
-  if(h!==target.secretA)return toast('Réponse incorrecte',{err:true});
-  const r3=await dialog({title:'Nouveau mot de passe',ok:'Enregistrer',fields:[{key:'p1',label:'Nouveau mot de passe',type:'password',required:true},{key:'p2',label:'Confirmer le mot de passe',type:'password',required:true}]});
-  if(!r3)return;if(r3.p1!==r3.p2)return toast('Les deux mots de passe ne correspondent pas',{err:true});
-  if(isSA){sa.passHash=await hashSAPass(r3.p1);saveSA(sa)}else put('members',{...target,passHash:await hashMemberPass(target.id,r3.p1)});
-  toast('Mot de passe mis à jour ✓. Vous pouvez vous reconnecter.',{ok:true})}
+  if(!target)return toast('Identifiant introuvable',{err:true});
+  const hasEmail=!!(target.email&&getEmailCfg()),hasQ=!!target.secretQ;
+  if(!hasEmail&&!hasQ)return toast("Aucun moyen de récupération n'est configuré pour ce compte. Demandez à un administrateur (ou au super-administrateur) de réinitialiser l'accès.",{err:true});
+  if(hasEmail&&hasQ){const r2=await dialog({title:'Comment récupérer votre accès ?',ok:'Continuer',fields:[{key:'m',label:'Méthode',type:'seg',options:[['email','Par e-mail'],['q','Question secrète']],value:'email'}]});
+    if(!r2)return; if(r2.m==='email')return forgotByEmail(target,isSA);return forgotBySecret(target,isSA)}
+  if(hasEmail)return forgotByEmail(target,isSA);
+  return forgotBySecret(target,isSA)}
 
 /* ---- panneau du super-administrateur ---- */
 function saPanelHtml(){const box=(t,body)=>`<div style="background:rgba(255,255,255,.09);border-radius:20px;padding:18px;margin:18px 0"><b style="font-size:15px">${t}</b>${body}</div>`;
@@ -520,6 +542,53 @@ function pgP2P(){const S=P2P.status;
     body=stepBox('La connexion a échoué','<p style="margin:0 0 14px">Vérifiez que les deux téléphones sont sur le même réseau Wi-Fi, et que le code a été copié en entier.</p><button class="btn o" data-a="p2pnew">Réessayer</button>');
   }
   return{title:'Synchronisation locale',body}}
+
+/* ============ Demandes d'acces entre membres ============ */
+/* Un membre ne voit jamais les depenses/revenus d'un autre membre par defaut.
+   Il peut demander l'acces ; le titulaire du compte doit l'accepter avant que
+   quoi que ce soit ne devienne visible. */
+const accessOf=(from,to)=>list('access').find(a=>a.from===from&&a.to===to);
+const approvedAccess=()=>list('access').filter(a=>a.from===UI.me&&a.status==='approved').map(a=>a.to);
+const pendingReceived=()=>list('access').filter(a=>a.to===UI.me&&a.status==='pending');
+function pgAccess(){const me=UI.me,others=list('members').filter(m=>m.id!==me);
+  const recv=pendingReceived();
+  const row=(m,body)=>`<div class="row" style="padding:10px 0;border-bottom:1px solid var(--line)">${avatarM(m,38)}<div class="grow"><b>${esc(m.name)}</b></div>${body}</div>`;
+  const mine=others.map(m=>{const a=accessOf(me,m.id);
+    if(!a||a.status==='denied'||a.status==='revoked')return row(m,`<button class="btn-s" data-a="reqaccess" data-id="${m.id}">Demander l'accès</button>`);
+    if(a.status==='pending')return row(m,`<span class="badge b-p">En attente</span> <button class="ia" data-a="cancelreq" data-id="${a.id}" title="Annuler" aria-label="Annuler">${svg('x',16)}</button>`);
+    return row(m,`<span class="badge b-c">${svg('check',13)} Accès accordé</span> <button class="ia danger" data-a="cancelreq" data-id="${a.id}" title="Retirer" aria-label="Retirer">${svg('x',16)}</button>`);
+  }).join('');
+  const recvHtml=recv.length?recv.map(a=>{const m=byId('members',a.from);return row(m,`<button class="btn-s" data-a="acceptreq" data-id="${a.id}">Accepter</button><button class="btn-s danger" data-a="denyreq" data-id="${a.id}">Refuser</button>`)}).join(''):'<p class="mut" style="margin:6px 0">Aucune demande en attente.</p>';
+  return{title:'Accès aux autres membres',body:`<div class="card"><h3>Demandes reçues</h3><p class="mut" style="margin:0 0 8px">D’autres membres peuvent demander à voir vos dépenses et revenus. Rien n’est visible tant que vous n’avez pas accepté.</p>${recvHtml}</div>
+   <div class="card"><h3>Voir les comptes d’un autre membre</h3><p class="mut" style="margin:0 0 8px">Votre demande doit être acceptée par la personne concernée avant que vous ne voyiez quoi que ce soit.</p>${mine||'<p class="mut">Aucun autre membre.</p>'}</div>`}}
+
+/* ============ Recuperation du mot de passe par e-mail (EmailJS, gratuit) ============ */
+/* EmailJS (emailjs.com) offre un plan gratuit (pas de carte bancaire) pour envoyer des
+   e-mails depuis une simple page web, sans serveur. A configurer une seule fois par un
+   administrateur (Reglages > Synchronisation > Récupération par e-mail). */
+let EMJS=null,PENDING_CODE=null;
+function getEmailCfg(){const r=list('settings').find(s=>s.id==='emailjs');return r&&r.service&&r.template&&r.key?r:null}
+async function loadEmailJS(){if(EMJS)return EMJS;const m=await import('https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.es.js');EMJS=m.default||m;return EMJS}
+async function sendResetCode(email,name){const cfg=getEmailCfg();if(!cfg)throw new Error("La récupération par e-mail n'est pas configurée.");
+  const code=String(Math.floor(100000+Math.random()*900000));
+  const emailjs=await loadEmailJS();emailjs.init(cfg.key);
+  await emailjs.send(cfg.service,cfg.template,{to_email:email,email:email,code,name:name||''});
+  PENDING_CODE={email,code,exp:Date.now()+10*60*1000};return true}
+function pgEmailCfg(){const c=getEmailCfg()||{};return{title:'Récupération par e-mail',body:`
+ <div class="card" style="line-height:1.6"><h3>Configuration EmailJS (gratuit)</h3>
+ Permet d'envoyer un code de réinitialisation par e-mail quand un membre a oublié son mot de passe. Service gratuit, sans carte bancaire (compte à créer une seule fois sur <b>emailjs.com</b>) :
+ <ol style="margin:10px 0 0;padding-left:20px">
+  <li>Créez un compte gratuit sur emailjs.com.</li>
+  <li>Ajoutez un service d'envoi (Gmail par exemple) → notez son <b>Service ID</b>.</li>
+  <li>Créez un modèle d'e-mail avec les variables <code>{{to_email}}</code>, <code>{{code}}</code>, <code>{{name}}</code> → notez son <b>Template ID</b>.</li>
+  <li>Dans « Account » → « API Keys », copiez la <b>Public Key</b>.</li>
+ </ol></div>
+ <label class="lbl">Service ID</label><input class="inp" id="ej_s" value="${esc(c.service||'')}">
+ <label class="lbl">Template ID</label><input class="inp" id="ej_t" value="${esc(c.template||'')}">
+ <label class="lbl">Public Key</label><input class="inp" id="ej_k" value="${esc(c.key||'')}">
+ <button class="btn" style="background:var(--pri)" data-a="emailcfgsave">Enregistrer</button>
+ ${c.service?'<button class="btn o" style="color:var(--out)" data-a="emailcfgoff">Désactiver la récupération par e-mail</button>':''}
+ <p class="mut" style="margin-top:14px;font-size:12.5px">Chaque membre doit aussi avoir un e-mail renseigné dans son profil (Réglages &gt; Membres &gt; modifier).</p>`}}
 /* ============ Etat UI ============ */
 const UI={tab:'home',me:localStorage.getItem(ME_KEY),unlocked:false,pin:'',q:'',ftype:'all',fper:'month',fmem:null,fcat:null,facc:null,ffrom:'',fto:'',bmode:1,bcur:new Date(),bmem:null};
 let F=null,deferredInstall=null;
@@ -547,7 +616,20 @@ function syncPill(){const s=SYNC;let cls,ic,txt;
   else if(s.status==='offline'){cls='warn';ic='cloudOff';txt='Hors ligne'+(DIRTY.size?' · '+DIRTY.size+' en attente':'')}
   else{cls='err';ic='alert';txt='Erreur de synchro'}
   return `<button class="sp ${cls}" data-a="syncpage" title="${esc(s.err||txt)}"><i class="${cls==='sync'?'spin-i':''}">${svg(ic,16)}</i><span>${txt}</span></button>`}
-function picker(){return `<div class="gate"><div class="gate-in"><div class="glogo">${svg('home',30)}</div><h1>${esc(DB.meta.family)}</h1><div style="opacity:.85;font-size:17px">${T('Qui êtes-vous ?')}</div><div class="pf">${list('members').map(m=>`<button data-a="pick" data-id="${m.id}"><span class="ring">${avatarM(m,74)}</span><br>${esc(m.name)}</button>`).join('')}</div><button class="gbtn" data-a="syncjoin">${svg('link',18)} Rejoindre une famille avec un code</button><button class="gbtn" data-a="adminlogin">${svg('lock',18)} Connexion administrateur</button></div></div>`}
+function loginBox(){return `<div style="background:rgba(255,255,255,.1);border-radius:22px;padding:18px;text-align:left;margin:26px 0 20px">
+  <b style="font-size:15px">${svg('lock',16)} Se connecter</b>
+  <input class="inp" id="lg_u" placeholder="Identifiant" style="margin-top:12px;background:rgba(255,255,255,.14);color:#fff" autocapitalize="none">
+  <input class="inp" id="lg_p" type="password" placeholder="Mot de passe" style="margin-top:8px;background:rgba(255,255,255,.14);color:#fff">
+  <div id="lg_err" style="color:#ffb4b4;font-size:12.5px;min-height:16px;margin-top:6px"></div>
+  <button class="gbtn" style="width:100%;justify-content:center;background:#fff;color:var(--pri2);border:0;font-weight:800;margin-top:2px" data-a="gologin">Se connecter</button>
+  <button data-a="adminforgot" style="background:none;border:0;color:rgba(255,255,255,.85);font-weight:700;font-size:13px;margin-top:10px;width:100%;text-align:center">Mot de passe oublié ?</button>
+ </div>`}
+function picker(){const hasCreds=list('members').some(m=>m.username)||loadSA();
+  return `<div class="gate"><div class="gate-in"><div class="glogo">${svg('home',30)}</div><h1>${esc(DB.meta.family)}</h1><div style="opacity:.85;font-size:17px">${T('Qui êtes-vous ?')}</div>
+  ${loginBox()}
+  <details><summary style="cursor:pointer;color:rgba(255,255,255,.85);font-weight:700;font-size:14px;margin-bottom:6px">Ou choisissez votre profil sur cet appareil</summary>
+  <div class="pf">${list('members').map(m=>`<button data-a="pick" data-id="${m.id}"><span class="ring">${avatarM(m,74)}</span><br>${esc(m.name)}</button>`).join('')}</div></details>
+  <button class="gbtn" data-a="syncjoin">${svg('link',18)} Rejoindre une famille avec un code</button></div></div>`}
 function pinScreen(me){return `<div class="gate"><div class="gate-in tc"><div style="margin-top:20px">${avatarM(me,76)}</div><h1 style="font-size:26px">${T('Bonjour')}, ${esc(me.name)}</h1><div class="dots">${[0,1,2,3].map(i=>`<i class="${i<UI.pin.length?'f':''}"></i>`).join('')}</div><div style="height:22px;color:var(--gold)">${UI.pinerr?'Code incorrect':''}</div><div class="pad">${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-a="pin" data-v="${n}">${n}</button>`).join('')}<span></span><button data-a="pin" data-v="0">0</button><button data-a="pinback">⌫</button></div><button data-a="switch" style="margin-top:26px;background:none;border:0;color:rgba(255,255,255,.8);font-weight:700">Changer de profil</button></div></div>`}
 
 /* ============ Accueil ============ */
@@ -793,14 +875,14 @@ function settings(){const me=curMe();
   const st={off:'Désactivée · données uniquement sur ce téléphone',ok:'Activée · tout est à jour',syncing:'Synchronisation en cours…',connecting:'Connexion…',offline:'Hors ligne · '+DIRTY.size+' modification(s) en attente',error:'Erreur · touchez pour voir'}[SYNC.fid?SYNC.status:'off'];
   return `<div class="setgrid"><div>
   <section class="card"><div class="row"><button class="avedit" data-a="editme" aria-label="Modifier ma photo">${avatarM(me,64)}<span class="cam">${svg('camera',14)}</span></button><div class="grow"><b style="font-size:18px">${esc(me.name)}</b><div class="mut">${isParent()?'Administrateur':'Membre'} · ${esc(DB.meta.family)}</div></div><button class="btn-s" data-a="switch">${svg('logout',16)} Changer</button></div>
-  <div class="list" style="margin-top:12px">${item('user','Modifier mon profil','Nom et photo','editme')}${item('lock','Code PIN',me.pin?'Code défini':'Aucun code défini','setpin')}</div></section>
+  <div class="list" style="margin-top:12px">${item('user','Modifier mon profil','Nom et photo','editme')}${item('lock','Code PIN',me.pin?'Code défini':'Aucun code défini','setpin')}${!isParent()?item('users','Accès aux autres membres','Demander ou accorder l’accès aux dépenses d’un autre membre','accesspage'):''}</div></section>
   <section class="card"><h3>${T('Langue')}</h3>${seg('lang',[['fr','Français'],['mg','Malagasy']],PREFS.lang)}<h3 style="margin-top:16px">${T('Thème')}</h3>${seg('theme',[['auto','Auto'],['light','Clair'],['dark','Sombre']],PREFS.theme)}<h3 style="margin-top:16px">Couleurs de l'application</h3><div class="pals">${PALS.map(p=>`<button class="pal ${(PREFS.pal||'aurore')===p.k?'on':''}" data-a="pal" data-v="${p.k}" style="--a:${p.c1};--b:${p.c2}"><i></i><span>${p.n}</span></button>`).join('')}<label class="pal ${PREFS.pal==='custom'?'on':''}" style="--a:${PREFS.customHex||'#8a8a95'};--b:${PREFS.customHex||'#8a8a95'}"><i style="background:${PREFS.customHex||'linear-gradient(135deg,#aaa,#ccc)'}">${PREFS.customHex?'':svg('drop',16)}</i><span class="grow">Personnalisé</span><input type="color" data-bind="customcolor" value="${PREFS.customHex||'#6D4AFF'}" style="width:26px;height:26px;border:0;padding:0;background:none;border-radius:8px"></label></div><p class="mut" style="margin:8px 4px 0;font-size:12.5px">Choisissez « Personnalisé » pour donner à l'application la couleur de votre choix.</p></section>
   ${deferredInstall?`<section class="card"><div class="list">${item('smartphone',"Installer l'application",'Ajouter à l’écran d’accueil','install')}</div></section>`:''}
   </div><div>
   ${isParent()?`<section class="card"><h3>Gestion du foyer</h3><div class="list">
    <div class="li locked"><span class="li-ic">${svg('lock',20)}</span><span class="grow"><b>Nom de la famille</b><small>${esc(DB.meta.family)} · non modifiable</small></span></div>${item('users','Membres de la famille',list('members').length+' membre(s)'+(isOwner()?' · ajouter, renommer, supprimer':' · lecture seule'),'members')}${item('wallet','Sources de revenus','Papa, Maman, voitures…','sources')}${item('tag','Catégories','Catégories et sous-catégories','cats')}${item('wallet','Comptes','Espèces, MVola, Orange Money…','accounts')}${item('repeat','Opérations récurrentes',list('recurrings').length+' automatique(s)','recs')}</div></section>`:''}
   <section class="card"><h3>Données et synchronisation</h3><div class="list">${item(SYNC.fid?'cloud':'cloudOff','Synchronisation',SYNC.fid?st:'Internet (cloud) ou Wi-Fi local, sans internet','syncpage')}${isParent()?item('download','Sauvegarde manuelle','Envoyer ou recevoir un fichier (WhatsApp)','backup'):''}</div></section></div></div>
-  <div class="foot">${esc(DB.meta.family)} · Famille Budget version 2.4<br><button data-a="saback" style="background:none;border:0;color:var(--mut);text-decoration:underline;font-size:12px;margin-top:6px">Administration</button></div>`}
+  <div class="foot">${esc(DB.meta.family)} · Famille Budget version 2.5.1<br><button data-a="saback" style="background:none;border:0;color:var(--mut);text-decoration:underline;font-size:12px;margin-top:6px">Administration</button></div>`}
 
 async function editMember(m,self){if(!self&&!isOwner()&&!SA_SESSION)return toast("Seul l'administrateur principal de la famille peut ajouter ou modifier les membres.",{err:true});
   const isNew=!m;const canRole=isNew||(isParent()&&m.id!==UI.me);
@@ -830,7 +912,7 @@ async function newSubIn(parent){const r=await dialog({title:'Nouvelle sous-caté
 
 /* ---- pages secondaires ---- */
 let SUB=null;
-function page(name){SUB=name;const h={members:pgMembers,sources:pgSources,cats:pgCats,accounts:pgAccounts,recs:pgRecs,sync:pgSync,syncmenu:pgSyncMenu,p2p:pgP2P,backup:pgBackup}[name]();
+function page(name){SUB=name;const h={members:pgMembers,sources:pgSources,cats:pgCats,accounts:pgAccounts,recs:pgRecs,sync:pgSync,syncmenu:pgSyncMenu,p2p:pgP2P,backup:pgBackup,access:pgAccess,emailcfg:pgEmailCfg}[name]();
   $('#modal').innerHTML=`<div class="sheet wide"><div class="in-"><header class="sh"><button class="ib" data-a="closepage" aria-label="Retour">${svg('chevL',20)}</button><h2 class="grow">${h.title}</h2>${h.action||''}</header>${h.body}</div></div>`}
 const row=(l,r,a,id)=>`<div class="tile" ${a?`data-a="${a}" data-id="${id}"`:''}>${l}${r}</div>`;
 function roleBadge(m){if(m.id===ownerId())return '<span class="badge b-p">Administrateur principal</span>';if(m.role==='parent')return '<span class="badge b-p">Administrateur</span>';if(m.role==='guest')return '<span class="badge" style="background:var(--fill);color:var(--mut)">Invité</span>';return '<span class="badge b-c">Membre (enfant)</span>'}
@@ -926,7 +1008,7 @@ function pgSync(){if(!SYNC.fid)return{title:'Synchronisation automatique',body:`
   <div class="card" style="line-height:1.6"><h3>Vous êtes le propriétaire ?</h3>Créez d’abord un projet Firebase gratuit en suivant le fichier <b>GUIDE_SYNCHRONISATION</b>, puis appuyez sur « Activer ». Vous obtiendrez un code d’invitation à envoyer aux autres membres.</div><button class="btn" style="background:var(--pri)" data-a="syncenable">${svg('cloud',18)} Activer la synchronisation</button>
   <div class="card" style="margin-top:14px;line-height:1.6"><h3>Un membre vous a envoyé un code ?</h3>Appuyez sur « Rejoindre » et collez le code d’invitation reçu.</div><button class="btn o" data-a="syncjoin">${svg('link',18)} Rejoindre avec un code</button>`};
   return{title:'Synchronisation automatique',body:`<div class="card" id="syncstat">${syncStatHtml()}</div><button class="btn" style="background:var(--pri)" data-a="syncnow">${svg('refresh',18)} Synchroniser maintenant</button>${isParent()?`<button class="btn o" data-a="syncinvite">${svg('link',18)} Inviter un membre (code d’invitation)</button>`:''}<button class="btn o" style="color:var(--out)" data-a="syncoff">${svg('cloudOff',18)} Désactiver sur ce téléphone</button><p class="mut" style="margin:14px 4px;font-size:13px;line-height:1.5">Désactiver la synchronisation ne supprime aucune donnée : elles restent sur ce téléphone et dans le cloud de la famille.</p>`}}
-function pgSyncMenu(){return{title:'Synchronisation',body:`<div class="list">${(()=>{const item=(ic,t,s2,a)=>`<button class="li" data-a="${a}"><span class="li-ic">${svg(ic,20)}</span><span class="grow"><b>${t}</b><small>${s2}</small></span>${svg('chevR',18,'mut')}</button>`;return item(SYNC.fid?'cloud':'cloudOff','Synchronisation automatique (Internet)',SYNC.fid?'Activée · via le cloud familial':'Non activée · nécessite une connexion internet','syncauto')+item('smartphone','Synchronisation locale (même Wi-Fi, sans internet)','Connecter deux téléphones directement, comme Xender','p2psync')})()}</div>`}}
+function pgSyncMenu(){return{title:'Synchronisation',body:`<div class="list">${(()=>{const item=(ic,t,s2,a)=>`<button class="li" data-a="${a}"><span class="li-ic">${svg(ic,20)}</span><span class="grow"><b>${t}</b><small>${s2}</small></span>${svg('chevR',18,'mut')}</button>`;return item(SYNC.fid?'cloud':'cloudOff','Synchronisation automatique (Internet)',SYNC.fid?'Activée · via le cloud familial':'Non activée · nécessite une connexion internet','syncauto')+item('smartphone','Synchronisation locale (même Wi-Fi, sans internet)','Connecter deux téléphones directement, comme Xender','p2psync')+item('mail','Récupération par e-mail','Configurer l’envoi d’un code de réinitialisation','emailcfgpage')})()}</div>`}}
 
 /* ============ Actions ============ */
 const A={
@@ -1030,6 +1112,10 @@ setInterval(()=>{if(!SYNC.fid||!navigator.onLine)return;if(!_unsub)startSync();e
 
 Object.assign(A,{
  adminlogin:()=>adminLogin(),
+ gologin:async()=>{const u=$('#lg_u')?.value,p2=$('#lg_p')?.value,err=$('#lg_err');if(err)err.textContent='';
+   const res=await tryLogin(u,p2);
+   if(!res.ok){if(err)err.textContent=res.msg;else toast(res.msg,{err:true});return}
+   toast(res.sa?'Connecté en tant que super-administrateur':('Bienvenue, '+res.name+' ✓'),{ok:true})},
  adminforgot:()=>adminForgot(),
  saexit:()=>{SA_SESSION=false;render()},
  saback:()=>{UI.me=null;SA_SESSION=false;render();adminLogin()},
@@ -1055,6 +1141,7 @@ Object.assign(A,{
    await resetSADefault();toast('Super-administrateur réinitialisé aux valeurs par défaut ✓',{ok:true})}
 });
 
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.target.id==='lg_u'||e.target.id==='lg_p')){e.preventDefault();$('[data-a=gologin]')?.click()}});
 
 
 Object.assign(A,{
@@ -1068,6 +1155,26 @@ Object.assign(A,{
  p2pconnect:async()=>{const v=$('#p2p_in')?.value?.trim();if(!v)return toast('Collez le code reçu de l’autre téléphone',{err:true});
    try{await p2pFinishOffer(v);page('p2p')}catch(e){P2P.status='error';page('p2p')}},
  p2pnew:()=>{p2pReset();page('p2p')}
+});
+
+
+
+Object.assign(A,{
+ accesspage:()=>page('access'),
+ reqaccess:el=>{const to=el.dataset.id;if(accessOf(UI.me,to))return;put('access',{id:uid(),from:UI.me,to,status:'pending'});page('access');toast('Demande envoyée ✓',{ok:true})},
+ cancelreq:el=>{const a=byId('access',el.dataset.id);if(!a)return;del('access',a.id);page('access');toast('Demande retirée')},
+ acceptreq:el=>{const a=byId('access',el.dataset.id);if(!a)return;put('access',{...a,status:'approved'});page('access');refreshViews();toast('Accès accordé ✓',{ok:true})},
+ denyreq:el=>{const a=byId('access',el.dataset.id);if(!a)return;put('access',{...a,status:'denied'});page('access');toast('Demande refusée')}
+});
+
+
+
+Object.assign(A,{
+ emailcfgpage:()=>page('emailcfg'),
+ emailcfgsave:()=>{const service=$('#ej_s').value.trim(),template=$('#ej_t').value.trim(),key=$('#ej_k').value.trim();
+   if(!service||!template||!key)return toast('Remplissez les trois champs',{err:true});
+   put('settings',{id:'emailjs',service,template,key});page('emailcfg');toast('Configuration enregistrée ✓',{ok:true})},
+ emailcfgoff:async()=>{if(!await confirmDel('Désactiver la récupération par e-mail ?','La question secrète reste disponible.','Désactiver'))return;del('settings','emailjs');page('emailcfg');toast('Désactivée')}
 });
 
 
