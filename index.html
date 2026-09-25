@@ -589,6 +589,20 @@ function pgEmailCfg(){const c=getEmailCfg()||{};return{title:'Récupération par
  <button class="btn" style="background:var(--pri)" data-a="emailcfgsave">Enregistrer</button>
  ${c.service?'<button class="btn o" style="color:var(--out)" data-a="emailcfgoff">Désactiver la récupération par e-mail</button>':''}
  <p class="mut" style="margin-top:14px;font-size:12.5px">Chaque membre doit aussi avoir un e-mail renseigné dans son profil (Réglages &gt; Membres &gt; modifier).</p>`}}
+
+/* ============ Sauvegarde automatique ============ */
+/* En plus de la synchronisation (cloud ou Wi-Fi local) et du bouton "Envoyer mes donnees",
+   l'application enregistre automatiquement, de temps en temps, un fichier de secours dans
+   "Telechargements", sans rien demander. Objectif : ne jamais tout perdre, meme si personne
+   n'a pense a faire une sauvegarde manuelle. */
+const AUTOBK_KEY='fb_autobk',AUTOBK_EVERY=3*864e5; /* tous les 3 jours */
+function autoBackupDue(){try{const last=+localStorage.getItem(AUTOBK_KEY)||0;return Date.now()-last>AUTOBK_EVERY}catch(e){return false}}
+function runAutoBackup(){if(!list('members').length)return;if(!autoBackupDue())return;
+  try{const d={...DB,meta:{...DB.meta,exported_at:new Date().toISOString(),auto:1}},json=JSON.stringify(d);
+    const f=new File([json],'famille_budget_auto_'+dayKey(new Date())+'.json',{type:'application/json'}),a=document.createElement('a');
+    a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();a.remove();
+    localStorage.setItem(AUTOBK_KEY,String(Date.now()))}catch(e){}}
+
 /* ============ Etat UI ============ */
 const UI={tab:'home',me:localStorage.getItem(ME_KEY),unlocked:false,pin:'',q:'',ftype:'all',fper:'month',fmem:null,fcat:null,facc:null,ffrom:'',fto:'',bmode:1,bcur:new Date(),bmem:null};
 let F=null,deferredInstall=null;
@@ -882,20 +896,21 @@ function settings(){const me=curMe();
   ${isParent()?`<section class="card"><h3>Gestion du foyer</h3><div class="list">
    <div class="li locked"><span class="li-ic">${svg('lock',20)}</span><span class="grow"><b>Nom de la famille</b><small>${esc(DB.meta.family)} · non modifiable</small></span></div>${item('users','Membres de la famille',list('members').length+' membre(s)'+(isOwner()?' · ajouter, renommer, supprimer':' · lecture seule'),'members')}${item('wallet','Sources de revenus','Papa, Maman, voitures…','sources')}${item('tag','Catégories','Catégories et sous-catégories','cats')}${item('wallet','Comptes','Espèces, MVola, Orange Money…','accounts')}${item('repeat','Opérations récurrentes',list('recurrings').length+' automatique(s)','recs')}</div></section>`:''}
   <section class="card"><h3>Données et synchronisation</h3><div class="list">${item(SYNC.fid?'cloud':'cloudOff','Synchronisation',SYNC.fid?st:'Internet (cloud) ou Wi-Fi local, sans internet','syncpage')}${isParent()?item('download','Sauvegarde manuelle','Envoyer ou recevoir un fichier (WhatsApp)','backup'):''}</div></section></div></div>
-  <div class="foot">${esc(DB.meta.family)} · Famille Budget version 2.5.1<br><button data-a="saback" style="background:none;border:0;color:var(--mut);text-decoration:underline;font-size:12px;margin-top:6px">Administration</button></div>`}
+  <div class="foot">${esc(DB.meta.family)} · Famille Budget version 2.6<br><button data-a="saback" style="background:none;border:0;color:var(--mut);text-decoration:underline;font-size:12px;margin-top:6px">Administration</button></div>`}
 
 async function editMember(m,self){if(!self&&!isOwner()&&!SA_SESSION)return toast("Seul l'administrateur principal de la famille peut ajouter ou modifier les membres.",{err:true});
   const isNew=!m;const canRole=isNew||(isParent()&&m.id!==UI.me);
   const color=m?.color??PAL[list('members').length%PAL.length];
   const fields=[{key:'photo',label:'Photo de profil',type:'photo',value:m?.photo||'',name:m?.name||'?',color},{key:'name',label:'Nom du membre',value:m?.name||'',required:true,hint:'Ex : Papa, Maman, Tiana…'}];
   if(canRole)fields.push({key:'role',label:'Rôle',type:'seg',options:[['parent','Administrateur'],['child','Membre (enfant)'],['guest','Invité (accès restreint)']],value:m?.role||'child'});
-  fields.push({key:'pin',label:'Code PIN (facultatif)',type:'pin',value:m?.pin||''},{key:'color',label:'Couleur (si pas de photo)',type:'colors',value:color});
+  fields.push({key:'pin',label:'Code PIN (facultatif)',type:'pin',value:m?.pin||''},{key:'color',label:'Couleur de mon profil',type:'colors',value:color});
   if(isNew)fields.push({key:'src',label:'Créer une source de revenus à son nom',type:'seg',options:[['1','Oui'],['0','Non']],value:'0'});
   if(!self&&isParent())fields.push(...await editMemberAuthFields(m));
-  const r=await dialog({title:isNew?'Ajouter un membre':(self?'Mon profil':'Modifier le membre'),fields,ok:isNew?'Ajouter':'Enregistrer',text:isNew?"Seul un administrateur peut ajouter un membre.":'Le changement de nom conserve toutes les opérations et l\'historique.'});
+  if(self&&!isNew)fields.push(...await editMemberAuthFields(m));
+  const r=await dialog({title:isNew?'Ajouter un membre':(self?'Mon profil':'Modifier le membre'),fields,ok:isNew?'Ajouter':'Enregistrer',text:isNew?"Seul un administrateur peut ajouter un membre.":(self?"Votre identifiant et votre mot de passe vous servent à vous connecter directement, sans toucher votre photo.":'Le changement de nom conserve toutes les opérations et l\'historique.')});
   if(!r)return;const id=m?.id||uid();
-  let auth={username:m?.username||'',passHash:m?.passHash||'',secretQ:m?.secretQ||'',secretA:m?.secretA||''};
-  if(!self&&isParent()){try{auth=await applyMemberAuth(id,r,m)}catch(e){return toast(e.message,{err:true})}}
+  let auth={username:m?.username||'',passHash:m?.passHash||'',email:m?.email||'',secretQ:m?.secretQ||'',secretA:m?.secretA||''};
+  if((!self&&isParent())||(self&&!isNew)){try{auth=await applyMemberAuth(id,r,m)}catch(e){return toast(e.message,{err:true})}}
   put('members',{...(m||{}),id,name:r.name,role:canRole?r.role:(m?.role||'child'),pin:r.pin,color:r.color,photo:r.photo||'',...auth});
   if(!isNew&&r.name!==m.name)list('sources').filter(s=>s.type==='person'&&s.member_id===id).forEach(s=>put('sources',{...s,name:r.name}));
   if(isNew&&r.src==='1')put('sources',{id:uid(),name:r.name,type:'person',member_id:id,active:1});
@@ -923,7 +938,7 @@ function pgSources(){return{title:T('Sources de revenus'),action:`<button class=
 function pgCats(){return{title:T('Catégories'),action:`<button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newtop">${svg('plus',18)} Ajouter</button>`,body:topCats().map(c=>`<div class="panel" style="padding:6px 16px"><details class="acc" style="border:0"><summary><div class="bub" style="width:38px;height:38px;font-size:19px;background:${col(c.color)}26">${emo(c.icon)}</div><div class="grow"><b>${esc(c.name)}</b><div class="t2">${subsOf(c.id).length} sous-catégorie(s)</div></div></summary>${subsOf(c.id).map(s=>`<div class="kv"><span>${esc(s.name)}</span><span><button class="ia" data-a="rensub" data-id="${s.id}" aria-label="Renommer">${svg('edit',16)}</button><button class="ia danger" data-a="delsub" data-id="${s.id}" aria-label="Supprimer">${svg('trash',16)}</button></span></div>`).join('')}<div class="chips" style="padding:8px 0"><button class="chip" data-a="addsub" data-id="${c.id}">＋ Sous-catégorie</button><button class="chip" data-a="rentop" data-id="${c.id}">Renommer</button></div></details></div>`).join('')}}
 function pgAccounts(){return{title:T('Comptes'),action:`<button class="ib" data-a="transfer" title="Transfert" aria-label="Transfert">${svg('swap',18)}</button><button class="btn-add" style="display:inline-flex;padding:10px 14px" data-a="newaccount">${svg('plus',18)} Ajouter</button>`,body:`<div class="hero" style="margin-top:0"><div class="row"><span class="grow" style="opacity:.8">Total tous comptes</span><b style="font-size:22px" class="num">${ar(totalBalance())}</b></div></div>`+list('accounts').map(a=>row('<div class="bub" style="background:var(--fill)">💳</div>',`<div class="grow"><b>${esc(a.name)}</b></div><b class="num">${ar(balance(a.id))}</b>`,'editaccount',a.id)).join('')}}
 function pgRecs(){const l=list('recurrings');return{title:T('Récurrents'),body:l.length?l.map(r=>`<div class="tile"><div class="bub" style="background:${r.type==='in'?'#12b76a26':'#f0443826'}">${svg(r.type==='in'?'arrowUp':'arrowDown',20)}</div><div class="grow"><b>${esc(r.type==='in'?(byId('sources',r.source_id)?.name||'Revenu'):catFull(r.category_id))}</b><div class="t2">${ar(r.amount)} · le ${r.day} de chaque mois</div></div><button class="sw2 ${r.active?'on':''}" data-a="togrec" data-id="${r.id}" aria-label="Activer / désactiver"></button><button class="ia danger" data-a="delrec" data-id="${r.id}" aria-label="Supprimer">${svg('trash',18)}</button></div>`).join(''):`<div class="empty"><b>🔁</b>Aucune opération automatique.<br>Activez « Répéter chaque mois » lors d'une saisie.</div>`}}
-function pgBackup(){return{title:'Sauvegarde manuelle',body:`<div class="card" style="line-height:1.6"><h3>Comment transférer les données par fichier</h3><ol style="margin:0;padding-left:20px"><li><b>Sur le téléphone qui a les données :</b> touchez « Envoyer mes données ». Choisissez WhatsApp (ou Drive) dans la fenêtre qui s'ouvre. Si aucune fenêtre ne s'ouvre, le fichier est enregistré dans « Téléchargements » : envoyez-le vous-même.</li><li><b>Sur l'autre téléphone :</b> enregistrez le fichier reçu, puis touchez « Recevoir des données » et choisissez ce fichier.</li></ol><p class="mut" style="margin:12px 0 0"><b>À savoir :</b> si vous rechargez un fichier créé sur <u>ce même téléphone</u>, il n'y a rien de nouveau à ajouter. C'est normal (« 0 » nouvelle opération). Pour partager en direct sans fichier, utilisez la synchronisation automatique.</p></div><button class="btn" style="background:var(--pri)" data-a="export">${svg('upload',18)} Envoyer mes données (fichier)</button><button class="btn o" data-a="import">${svg('download',18)} Recevoir des données (fichier)</button>`}}
+function pgBackup(){return{title:'Sauvegarde manuelle',body:`<div class="card" style="line-height:1.6"><h3>${svg('check',16)} Sauvegarde automatique</h3>Tous les 3 jours environ, un fichier de secours est enregistré tout seul dans « Téléchargements », sans rien à faire.<br><span class="mut" style="font-size:12.5px">Dernière sauvegarde automatique : ${(()=>{try{const t=+localStorage.getItem('fb_autobk')||0;return t?new Date(t).toLocaleString('fr-FR'):'pas encore effectuée'}catch(e){return '—'}})()}</span></div><div class="card" style="line-height:1.6"><h3>Comment transférer les données par fichier</h3><ol style="margin:0;padding-left:20px"><li><b>Sur le téléphone qui a les données :</b> touchez « Envoyer mes données ». Choisissez WhatsApp (ou Drive) dans la fenêtre qui s'ouvre. Si aucune fenêtre ne s'ouvre, le fichier est enregistré dans « Téléchargements » : envoyez-le vous-même.</li><li><b>Sur l'autre téléphone :</b> enregistrez le fichier reçu, puis touchez « Recevoir des données » et choisissez ce fichier.</li></ol><p class="mut" style="margin:12px 0 0"><b>À savoir :</b> si vous rechargez un fichier créé sur <u>ce même téléphone</u>, il n'y a rien de nouveau à ajouter. C'est normal (« 0 » nouvelle opération). Pour partager en direct sans fichier, utilisez la synchronisation automatique.</p></div><button class="btn" style="background:var(--pri)" data-a="export">${svg('upload',18)} Envoyer mes données (fichier)</button><button class="btn o" data-a="import">${svg('download',18)} Recevoir des données (fichier)</button>`}}
 
 
 /* ============ Synchronisation automatique (Firebase Firestore - plan gratuit Spark, sans carte bancaire) ============ */
@@ -1182,7 +1197,7 @@ Object.assign(A,{
 /* ============ Demarrage ============ */
 function migrate(){let ch=false;
   if(!DB.meta.ownerId){const p=list('members').find(m=>m.role==='parent');if(p){DB.meta.ownerId=p.id;ch=true}}[['s_papa','m_papa'],['s_maman','m_maman']].forEach(([s,m])=>{const r=DB.sources.find(x=>x.id===s);if(r&&r.member_id===undefined&&DB.members.some(x=>x.id===m)){r.member_id=m;ch=true}});if(ch)persist()}
-migrate();loadSync();runRecurring();render();
+migrate();loadSync();runRecurring();render();setTimeout(runAutoBackup,4000);
 {const sp=$('#splash');if(sp){sp.classList.add('hide');setTimeout(()=>sp.remove(),500)}}
 if(SYNC.fid)startSync();
 if('serviceWorker' in navigator&&/^https?:/.test(location.protocol))navigator.serviceWorker.register('sw.js').catch(()=>{});
