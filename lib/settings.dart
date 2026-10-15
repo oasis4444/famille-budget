@@ -1,13 +1,15 @@
-import 'package:file_selector/file_selector.dart' show openFile;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
+import 'devices.dart';
 import 'store.dart';
+import 'sync.dart';
 import 'ui.dart';
 
 /// Import d'un fichier de données reçu (WhatsApp, etc.) : fusion sans doublon.
 Future<void> importFlow(BuildContext c) async {
-  final f = await openFile();
-  final path = f?.path;
+  final r = await FilePicker.platform.pickFiles();
+  final path = r?.files.single.path;
   if (path == null) return;
   try {
     final n = await store.importFile(path);
@@ -38,7 +40,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: store,
+      listenable: Listenable.merge([store, Sync.instance]),
       builder: (_, __) {
         final me = store.me!;
         return Scaffold(
@@ -98,6 +100,9 @@ class SettingsScreen extends StatelessWidget {
                 },
                 child: const Row(children: [Icon(Icons.lock_outline), SizedBox(width: 14), Text('Mon code PIN', style: TextStyle(fontWeight: FontWeight.w700))]),
               ),
+            _nav(context, Sync.instance.connected ? Icons.cloud_done_outlined : Icons.devices_outlined, 'Appareils et synchronisation',
+                Sync.instance.configured ? (Sync.instance.connected ? 'Connecté — mise à jour automatique' : 'Relié, en attente du Wi-Fi') : 'Relier téléphone, tablette et PC',
+                const DevicesPage()),
             if (store.isParent) ...[
               Panel(
                 onTap: () async {
@@ -119,7 +124,7 @@ class SettingsScreen extends StatelessWidget {
               _nav(context, Icons.sync_alt, tr('Sauvegarde et partage'), 'Fusionner les téléphones par fichier', const SyncPage()),
             ],
             const SizedBox(height: 8),
-            Center(child: Text('Famille Budget 1.0 · fonctionne sans internet', style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12))),
+            Center(child: Text('Famille Budget 1.1 · fonctionne sans internet', style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12))),
           ]),
         );
       },
@@ -478,7 +483,7 @@ class SyncPage extends StatelessWidget {
               '1. Sur le téléphone A : « Envoyer mes données » → choisissez WhatsApp.\n'
               '2. Sur le téléphone B : ouvrez le fichier reçu, enregistrez-le, puis « Importer un fichier ».\n'
               '3. Faites l’inverse pour que les deux soient identiques.\n\n'
-              'Les données sont fusionnées sans doublon ; en cas de modification des deux côtés, la plus récente l’emporte. Ce fichier sert aussi de sauvegarde complète.',
+              'Les données sont fusionnées sans doublon ; en cas de modification des deux côtés, la plus récente l’emporte. Ce fichier sert aussi de sauvegarde complète (y compris le stock de riz).',
             ),
           ),
           SizedBox(

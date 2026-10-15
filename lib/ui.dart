@@ -8,6 +8,7 @@ const kGreenLight = Color(0xFF2F7A5F);
 const kLaterite = Color(0xFFC0492B);
 const kYlang = Color(0xFFE8B931);
 const kIncome = Color(0xFF2E7D5B);
+const kRice = Color(0xFF7A5C2E);
 
 const kPalette = <Color>[
   Color(0xFFC0492B), Color(0xFF1B4D3E), Color(0xFFE8B931), Color(0xFF3F7CAC),
@@ -37,7 +38,9 @@ ThemeData buildTheme(Brightness b) {
 
 // ---------------------------------------------------------------- formats
 final _nf = NumberFormat('#,##0', 'fr');
+final _nf1 = NumberFormat('#,##0.0', 'fr');
 String money(num v) => '${_nf.format(v.round())} Ar';
+String kg(num v) => '${_nf1.format(v)} kg';
 String dfmt(DateTime d, [String pattern = 'd MMM yyyy']) =>
     DateFormat(pattern, 'fr').format(d);
 
@@ -73,6 +76,7 @@ const _mg = <String, String>{
   'Rechercher': 'Karohy',
   'Changer de profil': 'Hanova mpampiasa',
   'Sauvegarde et partage': 'Fitahirizana sy fizarana',
+  'Stock de riz': 'Vatsy vary',
 };
 String tr(String s) => store.lang == 'mg' ? (_mg[s] ?? s) : s;
 

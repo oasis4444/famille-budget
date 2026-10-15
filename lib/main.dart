@@ -5,7 +5,9 @@ import 'forms.dart';
 import 'ops.dart';
 import 'reports.dart';
 import 'settings.dart';
+import 'stock.dart';
 import 'store.dart';
+import 'sync.dart';
 import 'ui.dart';
 
 Future<void> main() async {
@@ -13,6 +15,7 @@ Future<void> main() async {
   await initializeDateFormatting('fr');
   store = Store();
   await store.init();
+  await Sync.instance.init();
   runApp(const FamilleBudgetApp());
 }
 
@@ -132,10 +135,10 @@ class _ShellState extends State<Shell> {
   int i = 0;
   @override
   Widget build(BuildContext context) {
-    const pages = [HomeScreen(), OpsScreen(), ReportsScreen(), SettingsScreen()];
+    const pages = [HomeScreen(), OpsScreen(), ReportsScreen(), StockScreen(), SettingsScreen()];
     return Scaffold(
       body: pages[i],
-      floatingActionButton: i < 2
+      floatingActionButton: i == 0 || i == 1
           ? FloatingActionButton.extended(
               onPressed: () => openTxn(context),
               backgroundColor: kYlang,
@@ -151,6 +154,7 @@ class _ShellState extends State<Shell> {
           NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home), label: tr('Accueil')),
           NavigationDestination(icon: const Icon(Icons.receipt_long_outlined), selectedIcon: const Icon(Icons.receipt_long), label: tr('Opérations')),
           NavigationDestination(icon: const Icon(Icons.pie_chart_outline), selectedIcon: const Icon(Icons.pie_chart), label: tr('Bilans')),
+          NavigationDestination(icon: const Icon(Icons.grain), selectedIcon: const Icon(Icons.grain), label: tr('Stock de riz')),
           NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: tr('Réglages')),
         ],
       ),
@@ -194,6 +198,8 @@ class HomeScreen extends StatelessWidget {
             .take(8)
             .toList();
         final favs = store.list('fav').where((f) => f.str('memberId') == store.meId).toList();
+        final riceStock = store.riceStock;
+        final riceLow = riceStock <= store.riceThreshold;
         return ListView(padding: EdgeInsets.zero, children: [
           Container(
             padding: EdgeInsets.fromLTRB(20, MediaQuery.of(context).padding.top + 16, 20, 24),
@@ -222,6 +228,22 @@ class HomeScreen extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 110),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Panel(
+                color: riceLow ? kLaterite.withOpacity(.12) : null,
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StockScreen())),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(children: [
+                  CircleAvatar(radius: 22, backgroundColor: kRice.withOpacity(.16), child: const Icon(Icons.grain, color: kRice)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(tr('Stock de riz'), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                      Text(riceLow ? 'Stock bas — pensez à racheter' : 'Appuyez pour voir l’historique', style: TextStyle(fontSize: 12, color: riceLow ? kLaterite : Theme.of(context).hintColor)),
+                    ]),
+                  ),
+                  Text(kg(riceStock), style: TextStyle(fontWeight: FontWeight.w800, color: riceLow ? kLaterite : kRice)),
+                ]),
+              ),
               if (favs.isNotEmpty) ...[
                 const SectionTitle('Favoris'),
                 SingleChildScrollView(

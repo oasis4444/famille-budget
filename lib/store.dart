@@ -1,12 +1,23 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:uuid/uuid.dart';
+
+/// Vrai sur PC (Windows, macOS, Linux) : ces plateformes n'ont pas de
+/// stockage SQLite natif, on utilise sqflite_common_ffi à la place.
+bool get isDesktop =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux);
 
 typedef J = Map<String, dynamic>;
 
@@ -18,8 +29,9 @@ const kMemberColors = <int>[
   0xFF8E5BA8, 0xFF2A9D8F, 0xFFE07A5F, 0xFF6D6875,
 ];
 
-/// Un enregistrement générique (membre, source, catégorie, compte, opération...).
-/// u = date de modification (ms), d = supprimé (suppression douce, utile pour la fusion).
+/// Un enregistrement générique (membre, source, catégorie, compte, opération,
+/// mouvement de stock...). u = date de modification (ms), d = supprimé
+/// (suppression douce, utile pour la fusion).
 class Rec {
   final String id, kind;
   J data;
@@ -57,11 +69,25 @@ class Store extends ChangeNotifier {
   final Map<String, Rec> all = {};
   String? meId;
 
+  /// Appelé après chaque écriture locale (put/remove), pour que le module de
+  /// synchronisation (sync.dart) puisse pousser le changement vers les autres appareils du foyer.
+  /// Reste null tant que la synchronisation n'est pas initialisée.
+  void Function(Rec r)? onLocalWrite;
+
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
   // ---------------------------------------------------------------- init
   Future<void> init() async {
-    final dir = await getDatabasesPath();
+    String dir;
+    if (isDesktop) {
+      // Pas de stockage SQLite natif sur PC : on utilise sqflite_common_ffi,
+      // avec le dossier de données de l'application.
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+      dir = (await getApplicationSupportDirectory()).path;
+    } else {
+      dir = await getDatabasesPath();
+    }
     db = await openDatabase(
       p.join(dir, 'famille_budget.db'),
       version: 1,
@@ -79,7 +105,48 @@ class Store extends ChangeNotifier {
       await _write(db, Rec('local', 'local', {'theme': 'auto', 'lang': 'fr'}, 0, false));
       all['local'] = Rec('local', 'local', {'theme': 'auto', 'lang': 'fr'}, 0, false);
     }
+    if (!all.containsKey('rice')) {
+      // Réglages du stock de riz : seuil d'alerte en kg.
+      await _write(db, Rec('rice', 'rice_settings', {'threshold': 5.0}, 0, false));
+      all['rice'] = Rec('rice', 'rice_settings', {'threshold': 5.0}, 0, false);
+    }
     await runRecurring();
+    unawaited(_autoBackup());
+  }
+
+  /// Sauvegarde locale automatique : une copie complète des données une fois
+  /// par jour, conservée 14 jours, dans le dossier de l'application (aucun
+  /// serveur requis). S'ajoute à l'export manuel « Envoyer mes données »
+  /// (Réglages > Sauvegarde et partage) et à la synchronisation entre
+  /// appareils, qui fait déjà de chaque appareil relié une copie complète.
+  Future<void> _autoBackup() async {
+    try {
+      final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final l = all['local']!;
+      if (l.data['lastBackup'] == today) return;
+      final dir = Directory(p.join((await getApplicationSupportDirectory()).path, 'backups'));
+      await dir.create(recursive: true);
+      final f = File(p.join(dir.path, 'backup_$today.json'));
+      await f.writeAsString(jsonEncode({
+        'app': 'famille_budget',
+        'v': 1,
+        'records': [
+          for (final r in all.values)
+            if (r.kind != 'local')
+              {'id': r.id, 'kind': r.kind, 'data': r.data, 'u': r.u, 'd': r.d ? 1 : 0}
+        ],
+      }));
+      final old = dir.listSync().whereType<File>().toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
+      while (old.length > 14) {
+        await old.removeAt(0).delete();
+      }
+      await put('local', {...l.data, 'lastBackup': today}, id: 'local');
+    } catch (_) {
+      // La sauvegarde automatique est un filet de sécurité supplémentaire :
+      // une erreur ici (stockage plein, dossier inaccessible...) ne doit
+      // jamais empêcher l'application de fonctionner.
+    }
   }
 
   Map<String, Object?> _row(Rec r) => {
@@ -134,6 +201,7 @@ class Store extends ChangeNotifier {
     all[r.id] = r;
     await _write(db, r);
     notifyListeners();
+    if (kind != 'local') onLocalWrite?.call(r);
     return r;
   }
 
@@ -144,10 +212,25 @@ class Store extends ChangeNotifier {
     r.u = _now;
     await _write(db, r);
     notifyListeners();
+    if (r.kind != 'local') onLocalWrite?.call(r);
   }
 
   List<Rec> list(String kind) =>
       all.values.where((r) => r.kind == kind && !r.d).toList();
+
+  /// Applique un enregistrement venu d'un autre appareil (synchronisation ou fichier
+  /// importé) : la modification la plus récente (u) l'emporte, aucun doublon.
+  /// Renvoie vrai si l'enregistrement local a changé.
+  Future<bool> mergeRemote(String id, String kind, J data, int u, bool d) async {
+    if (kind == 'local') return false;
+    final cur = all[id];
+    if (cur != null && u <= cur.u) return false;
+    final r = Rec(id, kind, data, u, d);
+    all[id] = r;
+    await _write(db, r);
+    notifyListeners();
+    return true;
+  }
 
   // ---------------------------------------------------------------- session / réglages
   Rec? get me {
@@ -300,6 +383,69 @@ class Store extends ChangeNotifier {
     });
   }
 
+  // ---------------------------------------------------------------- stock de riz
+  /// Id de la catégorie « Alimentation » (celle créée au premier lancement).
+  String? get foodCatId {
+    for (final c in list('category')) {
+      if (c.name == 'Alimentation') return c.id;
+    }
+    return null;
+  }
+
+  /// Id de la sous-catégorie « Riz » sous Alimentation, si elle existe.
+  String? get riceSubId {
+    final cat = foodCatId;
+    if (cat == null) return null;
+    for (final s in subsOf(cat)) {
+      if ((s['name'] as String).toLowerCase() == 'riz') return s['id'] as String;
+    }
+    return null;
+  }
+
+  bool isRice(String? catId, String? subId) =>
+      catId != null && catId == foodCatId && subId != null && subId == riceSubId;
+
+  List<Rec> get riceMoves {
+    final l = list('rice_move');
+    l.sort((a, b) {
+      final c = b.date.compareTo(a.date);
+      return c != 0 ? c : b.u.compareTo(a.u);
+    });
+    return l;
+  }
+
+  /// Stock actuel en kg (entrées moins sorties).
+  double get riceStock {
+    var s = 0.0;
+    for (final m in list('rice_move')) {
+      s += m.str('type') == 'in' ? m.dbl('qty') : -m.dbl('qty');
+    }
+    return s;
+  }
+
+  double get riceThreshold => all['rice']?.dbl('threshold') ?? 5.0;
+
+  Future<void> setRiceThreshold(double v) async {
+    final r = all['rice']!;
+    await put('rice_settings', {...r.data, 'threshold': v}, id: 'rice');
+  }
+
+  /// Ajoute un mouvement de stock de riz (achat = in, consommation/perte = out).
+  /// txnId permet de relier un mouvement à la dépense qui l'a généré (évite les doublons).
+  Future<void> addRiceMove(String type, double qty, {String? note, DateTime? date, String? txnId}) async {
+    if (qty <= 0) return;
+    await put('rice_move', {
+      'type': type,
+      'qty': qty,
+      'date': (date ?? DateTime.now()).millisecondsSinceEpoch,
+      'note': note ?? '',
+      'memberId': meId,
+      if (txnId != null) 'txnId': txnId,
+    }, id: txnId != null ? 'ricefromtxn_$txnId' : null);
+  }
+
+  bool riceMoveExistsForTxn(String txnId) => all.containsKey('ricefromtxn_$txnId') && !all['ricefromtxn_$txnId']!.d;
+
   // ---------------------------------------------------------------- partage / sauvegarde
   Future<File> exportFile() async {
     final dir = await getTemporaryDirectory();
@@ -346,7 +492,7 @@ class Store extends ChangeNotifier {
   Future<File> csvFile(List<Rec> ts) async {
     String q(String s) => '"${s.replaceAll('"', '""')}"';
     final df = DateFormat('dd/MM/yyyy');
-    final sb = StringBuffer('\uFEFF');
+    final sb = StringBuffer('﻿');
     sb.writeln('Date;Type;Montant;Catégorie;Sous-catégorie;Source;Compte;Membre;Voiture;Note');
     final l = [...ts]..sort((a, b) => a.date.compareTo(b.date));
     for (final t in l) {

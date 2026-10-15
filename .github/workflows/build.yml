@@ -1,4 +1,4 @@
-name: Construire l'APK
+name: Construire les applications
 
 on:
   push:
@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  # ================================================================ Android
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +22,8 @@ jobs:
           channel: stable
           cache: true
 
+      # Clé de signature FIXE : indispensable pour que les mises à jour
+      # s'installent par-dessus l'ancienne version sans perdre les données.
       - name: Restaurer la clé de signature
         id: cache-key
         uses: actions/cache@v4
@@ -44,16 +47,92 @@ jobs:
           sed -i 's/android:label="[^"]*"/android:label="Famille Budget"/' android/app/src/main/AndroidManifest.xml
           sed -i -E 's/minSdk(Version)? ?=? ?flutter\.minSdkVersion/minSdk = 26/' android/app/build.gradle*
           sed -i -E 's/compileSdk(Version)? ?=? ?flutter\.compileSdkVersion/compileSdk = 36/' android/app/build.gradle*
+          # Permissions pour le scan de QR code (appairage entre appareils).
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <application#' android/app/src/main/AndroidManifest.xml
 
       - run: flutter pub get
       - run: flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: FamilleBudget-APK
+          name: FamilleBudget-Android
           path: build/app/outputs/flutter-apk/app-release.apk
 
+      # À télécharger et GARDER EN PLUSIEURS EXEMPLAIRES
       - uses: actions/upload-artifact@v4
         with:
           name: CLE-DE-SIGNATURE-A-CONSERVER
           path: ~/.android/debug.keystore
+
+  # ================================================================ Windows
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter create --platforms=windows --org mg.raoliarison --project-name famille_budget .
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FamilleBudget-Windows
+          path: build/windows/x64/runner/Release
+
+  # ================================================================ macOS
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter create --platforms=macos --org mg.raoliarison --project-name famille_budget .
+
+      - name: Autoriser la caméra (scan QR) et le réseau (synchronisation)
+        run: |
+          python3 - <<'PY'
+          import plistlib, pathlib
+          for name in ["macos/Runner/DebugProfile.entitlements", "macos/Runner/Release.entitlements"]:
+              p = pathlib.Path(name)
+              d = plistlib.loads(p.read_bytes())
+              d["com.apple.security.network.client"] = True
+              d["com.apple.security.network.server"] = True
+              d["com.apple.security.device.camera"] = True
+              p.write_bytes(plistlib.dumps(d))
+          info = pathlib.Path("macos/Runner/Info.plist")
+          d = plistlib.loads(info.read_bytes())
+          d["NSCameraUsageDescription"] = "Pour scanner le code d'appairage entre appareils."
+          info.write_bytes(plistlib.dumps(d))
+          PY
+
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FamilleBudget-macOS
+          path: build/macos/Build/Products/Release/famille_budget.app
+
+  # ================================================================ Linux
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer les dépendances de compilation Linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter create --platforms=linux --org mg.raoliarison --project-name famille_budget .
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FamilleBudget-Linux
+          path: build/linux/x64/release/bundle

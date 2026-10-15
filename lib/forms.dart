@@ -15,10 +15,11 @@ class _TxnFormState extends State<TxnForm> {
   String type = 'expense';
   final amount = TextEditingController();
   final note = TextEditingController();
+  final riceQty = TextEditingController();
   final focus = FocusNode();
   DateTime date = DateTime.now();
   String? catId, subId, srcId, carId, accId, toAccId, memberId;
-  bool fav = false, recurring = false;
+  bool fav = false, recurring = false, addRice = true;
   int recDay = math.min(28, DateTime.now().day);
 
   @override
@@ -44,9 +45,12 @@ class _TxnFormState extends State<TxnForm> {
   void dispose() {
     amount.dispose();
     note.dispose();
+    riceQty.dispose();
     focus.dispose();
     super.dispose();
   }
+
+  bool get isRiceExpense => type == 'expense' && store.isRice(catId, subId);
 
   List<MapEntry<String, String>> _entries(String kind, {bool activeOnly = true, bool carsOnly = false}) => [
         for (final r in store.list(kind))
@@ -132,6 +136,14 @@ class _TxnFormState extends State<TxnForm> {
       snack(context, 'Choisissez deux comptes différents');
       return false;
     }
+    double? riceKg;
+    if (isRiceExpense && addRice) {
+      riceKg = double.tryParse(riceQty.text.replaceAll(RegExp(r'\s'), '').replaceAll(',', '.'));
+      if (riceKg == null || riceKg <= 0) {
+        snack(context, 'Entrez une quantité de riz valide (kg), ou désactivez l’ajout au stock');
+        return false;
+      }
+    }
     final d = <String, dynamic>{
       'type': type,
       'amount': a,
@@ -143,7 +155,10 @@ class _TxnFormState extends State<TxnForm> {
       if (type == 'income') 'sourceId': srcId,
       if (type == 'transfer') 'toAccountId': toAccId,
     };
-    await store.put('txn', d, id: widget.edit?.id);
+    final saved = await store.put('txn', d, id: widget.edit?.id);
+    if (riceKg != null) {
+      await store.addRiceMove('in', riceKg, note: 'Achat lié à une dépense', date: date, txnId: saved.id);
+    }
     if (fav && type == 'expense') {
       await store.put('fav', {'catId': catId, 'subId': subId, 'amount': a, 'memberId': store.meId});
     }
@@ -156,6 +171,7 @@ class _TxnFormState extends State<TxnForm> {
       setState(() {
         amount.clear();
         note.clear();
+        riceQty.clear();
         subId = null;
         fav = false;
       });
@@ -245,6 +261,26 @@ class _TxnFormState extends State<TxnForm> {
           PickTile(icon: Icons.person_outline, label: 'Membre', value: store.nameOf(memberId), onTap: _pickMember),
         if (type == 'expense' && store.list('source').any((s) => s.flag('car') && s.flag('active', true)))
           PickTile(icon: Icons.directions_car_outlined, label: 'Voiture concernée (facultatif)', value: carId == null ? 'Aucune' : store.nameOf(carId), onTap: _pickCar),
+        if (isRiceExpense)
+          Panel(
+            color: kRice.withOpacity(.10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Icon(Icons.grain, color: kRice),
+                const SizedBox(width: 10),
+                const Expanded(child: Text('Ajouter cet achat au stock de riz', style: TextStyle(fontWeight: FontWeight.w700))),
+                Switch(value: addRice, onChanged: (v) => setState(() => addRice = v), activeColor: kRice),
+              ]),
+              if (addRice) ...[
+                const SizedBox(height: 6),
+                TextField(
+                  controller: riceQty,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Quantité achetée (kg)', border: OutlineInputBorder()),
+                ),
+              ],
+            ]),
+          ),
         Panel(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           child: TextField(
